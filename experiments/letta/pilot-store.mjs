@@ -88,6 +88,8 @@ export async function pilotStore(db, config) {
       id text PRIMARY KEY, source jsonb NOT NULL, hash text NOT NULL,
       deleted boolean NOT NULL DEFAULT false, learned boolean NOT NULL DEFAULT false,
       addressed boolean NOT NULL DEFAULT false);
+    CREATE TABLE IF NOT EXISTS pilot_live_threads (
+      channel_id text PRIMARY KEY, parent_id text NOT NULL, guild_id text NOT NULL);
     CREATE TABLE IF NOT EXISTS pilot_optouts (author_id text PRIMARY KEY);
     CREATE TABLE IF NOT EXISTS pilot_source_holds (
       source_id text PRIMARY KEY, reason text NOT NULL,
@@ -140,7 +142,9 @@ export async function pilotStore(db, config) {
       "Pilot live channel differs from persisted configuration; use a separate state/database",
     );
   await db.query(
-    "UPDATE pilot_sources SET learnable=false,learned=true WHERE source->>'guildId'<>$1 OR NOT (source->>'channelId'=ANY($2::text[]))",
+    `UPDATE pilot_sources SET learnable=false,learned=true WHERE source->>'guildId'<>$1 OR
+      NOT (source->>'channelId'=ANY($2::text[]) OR EXISTS(SELECT 1 FROM pilot_live_threads t
+        WHERE t.channel_id=source->>'channelId' AND t.guild_id=$1 AND t.parent_id=ANY($2::text[])))`,
     [config.guildId, replyChannels(config)],
   );
   // Preserve the original cursor while migrating to independent channel progress.
@@ -271,7 +275,9 @@ export async function pilotStore(db, config) {
     const direct = (
       await db.query(
         `SELECT s.* FROM pilot_sources s WHERE NOT deleted AND addressed AND learnable
-        AND source->>'guildId'=$1 AND source->>'channelId'=ANY($2::text[])
+        AND source->>'guildId'=$1 AND (source->>'channelId'=ANY($2::text[])
+          OR EXISTS(SELECT 1 FROM pilot_live_threads t WHERE t.channel_id=source->>'channelId'
+            AND t.guild_id=$1 AND t.parent_id=ANY($2::text[])))
         AND NOT EXISTS(SELECT 1 FROM pilot_source_holds h WHERE h.source_id=s.id)
         AND NOT EXISTS(SELECT 1 FROM pilot_outbox o WHERE o.source_id=s.id)
         ORDER BY id::numeric LIMIT 1`,
@@ -606,8 +612,55 @@ export async function pilotStore(db, config) {
         note: "Bot replies are conversational context, never evidence about members.",
       };
     },
+    async registerThreads(threads, forumIds) {
+      if (
+        !forumIds.every((id) => replyChannels(config).includes(id)) ||
+        threads.some(
+          (t) =>
+            !snowflake(t.id) ||
+            !forumIds.includes(t.parent_id) ||
+            t.guild_id !== config.guildId ||
+            t.type !== 11,
+        )
+      )
+        throw new Error("Invalid live forum thread");
+      await transaction(async () => {
+        const current = await meta();
+        for (const thread of threads) {
+          const added = await db.query(
+            `INSERT INTO pilot_live_threads(channel_id,parent_id,guild_id)
+            VALUES($1,$2,$3) ON CONFLICT DO NOTHING RETURNING channel_id`,
+            [thread.id, thread.parent_id, config.guildId],
+          );
+          // A newly discovered discussion after forum activation starts live, including its first post.
+          if (added.rowCount && current.cursors[thread.parent_id])
+            await db.query(
+              "UPDATE pilot_meta SET cursors=jsonb_set(cursors,ARRAY[$1::text],to_jsonb('00000000000000000'::text))",
+              [thread.id],
+            );
+        }
+        for (const id of forumIds)
+          await db.query(
+            "UPDATE pilot_meta SET cursors=jsonb_set(cursors,ARRAY[$1::text],to_jsonb('00000000000000000'::text)) WHERE NOT (cursors ? $1)",
+            [id],
+          );
+      });
+    },
+    async replyChannelAllowed(channelId) {
+      return (
+        replyChannels(config).includes(channelId) ||
+        Boolean(
+          (
+            await db.query(
+              "SELECT 1 FROM pilot_live_threads WHERE channel_id=$1 AND guild_id=$2 AND parent_id=ANY($3::text[])",
+              [channelId, config.guildId, replyChannels(config)],
+            )
+          ).rowCount,
+        )
+      );
+    },
     async cursor(id, channelId = config.channelId) {
-      if (!snowflake(id) || !replyChannels(config).includes(channelId))
+      if (!snowflake(id) || !(await this.replyChannelAllowed(channelId)))
         throw new Error("Invalid live cursor");
       await db.query(
         `UPDATE pilot_meta SET cursors=jsonb_set(cursors,ARRAY[$2::text],to_jsonb($1::text)),
@@ -651,7 +704,10 @@ export async function deliver(store, discord, botId, channelId, record) {
     if (
       !source ||
       source.source.guildId !== scope.guildId ||
-      !replyChannels(scope).includes(targetChannel)
+      !(
+        replyChannels(scope).includes(targetChannel) ||
+        (await store.replyChannelAllowed?.(targetChannel))
+      )
     ) {
       await store.db.query(
         "UPDATE pilot_outbox SET status='held',error='Source outside live reply scope' WHERE source_id=$1",
