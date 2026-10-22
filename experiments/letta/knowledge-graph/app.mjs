@@ -236,7 +236,7 @@ function renderGraph() {
       group.append(svgEl("circle", { r: node.type === "person" ? 23 : 8, class: "node-shape" }));
       if (node.type === "person") {
         const initial = svgEl("text", { y: 5, "text-anchor": "middle", class: "initial" });
-        initial.textContent = node.label.slice(0, 1);
+        initial.textContent = [...node.label][0] ?? "";
         group.append(initial);
       }
     }
@@ -260,7 +260,7 @@ function renderGraph() {
         "text-anchor": "middle",
         class: "node-label",
       });
-      line.textContent = text;
+      line.textContent = text.length > limit ? text.slice(0, limit - 1) + "…" : text;
       group.append(line);
     });
     if (node.type === "candidate") {
