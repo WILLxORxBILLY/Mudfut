@@ -91,6 +91,10 @@ try {
     ])
       console.log((await db.query(query)).rows);
   } else {
+    const discord = discordTransport((await privateFile("discord-token")).trim(), record);
+    const bot = await discord.me();
+    const channelPlan = await liveChannelPlan(discord, config);
+    let liveConfig = config;
     const store = await pilotStore(db, config);
     knowledge = await communityKnowledge(db);
     try {
@@ -115,10 +119,6 @@ try {
     await pulse("startup_database_ready");
     if (store.reclassified.length)
       await record({ type: "reply_classification_upgrade", sourceIds: store.reclassified });
-    const discord = discordTransport((await privateFile("discord-token")).trim(), record);
-    const bot = await discord.me();
-    const channelPlan = await liveChannelPlan(discord, config);
-    let liveConfig = config;
     let historyCredentials;
     try {
       historyCredentials = JSON.parse(await privateFile("history-postgres.json"));
