@@ -6,13 +6,14 @@ settings:
 
 overrides:
   source-map-js@<1.2.2: 1.2.2
-  "@modelcontextprotocol/sdk@<1.31.0": 1.31.0
+  "@modelcontextprotocol/sdk@<1.32.0": 1.32.0
+  vite@>=7.0.0 <7.3.7: 7.3.7
   sharp@<0.35.5: 0.35.5
   "@janhapke/sharp-electron": npm:sharp@0.35.5
   brace-expansion@^2: 2.1.7
   brace-expansion@^5: 5.0.12
 
-pnpmfileChecksum: sha256-HcOT7XVIGrE5O/BRH9bEXQ2LOeAgh9/9mXuyo/P/VD0=
+pnpmfileChecksum: sha256-9i0ic7doEl3AtNWPOiGB1vdxdKTklgUcsVaGGQvyVjU=
 
 patchedDependencies:
   "@letta-ai/letta-code@0.34.14": 229abe3be7a2d2e85c71ad2a367de532338e4cbc79459f0a98c73de14c61ede2
@@ -37,8 +38,8 @@ importers:
         specifier: 3.9.5
         version: 3.9.5
       vitest:
-        specifier: 4.1.11
-        version: 4.1.11(@types/node@22.20.1)(vite@7.3.6(@types/node@22.20.1)(tsx@4.23.0)(yaml@2.9.0))
+        specifier: 4.1.12
+        version: 4.1.12(@types/node@22.20.1)(vite@7.3.7(@types/node@22.20.1)(tsx@4.23.0)(yaml@2.9.0))
 
 packages:
   "@alcalzone/ansi-tokenize@0.1.3":
@@ -518,7 +519,7 @@ packages:
       }
     engines: { node: ">=20.0.0" }
     peerDependencies:
-      "@modelcontextprotocol/sdk": 1.31.0
+      "@modelcontextprotocol/sdk": 1.32.0
     peerDependenciesMeta:
       "@modelcontextprotocol/sdk":
         optional: true
@@ -820,10 +821,10 @@ packages:
       }
     engines: { node: ">=20" }
 
-  "@modelcontextprotocol/sdk@1.31.0":
+  "@modelcontextprotocol/sdk@1.32.0":
     resolution:
       {
-        integrity: sha512-UvTMgnNlnIBO/22ob2RcVGDlcvOslQs8T59+FTGdA0L27a39fdGF/EDETNtDVK4DZGpwomlsYpRdA8UXcVL/pw==,
+        integrity: sha512-8BviX/hK4Gd2eL1KdTwm0gfl4d3wdoErW0Jd00h6nomUAtk6IJk5vwQJc6kfWtJTzN5OEV/lgIiJKI8fiDGAlA==,
       }
     engines: { node: ">=18" }
     peerDependencies:
@@ -1368,54 +1369,54 @@ packages:
         integrity: sha512-1mEZtMKPM09vDmQt5y7YvmN2+DFTP7Tg0EWXdic8/C6VRnpb33e4ghisCIE3WZjsE2N8mf+QV1Zqh7ZFYLWInQ==,
       }
 
-  "@vitest/expect@4.1.11":
+  "@vitest/expect@4.1.12":
     resolution:
       {
-        integrity: sha512-VX2x5vNJXET47KAFzwERI+KRMtTTCSWTfSMKsW7JsUsXV4psq++e3DvZpuTDOpHcxytiDs6p2nhVb2tVDiiUYw==,
+        integrity: sha512-vFlTt+YEu9WBpNjdGayNmlMVzrWPi1+sv853/7t2FU7hpO5gAFBKHzQmkCq5Xjpr+evegF2994LQT3hF3mRlqQ==,
       }
 
-  "@vitest/mocker@4.1.11":
+  "@vitest/mocker@4.1.12":
     resolution:
       {
-        integrity: sha512-2XJVD55d1o5AZous5CCGKS74g/riOj9odEt2bQpCVZeblHyHdnMeFl4jl0XjU21stf4mbjUkew2eXQZt65g5CQ==,
+        integrity: sha512-fKShNpKZzupWZuY0z7egydvL0sqW4INEZBEExMBMAa6izlENEVHwoXgdaTCaBZ5fwlr4xf2o1wXC83n9RpO+NA==,
       }
     peerDependencies:
       msw: ^2.4.9
-      vite: ^6.0.0 || ^7.0.0 || ^8.0.0
+      vite: 7.3.7
     peerDependenciesMeta:
       msw:
         optional: true
       vite:
         optional: true
 
-  "@vitest/pretty-format@4.1.11":
+  "@vitest/pretty-format@4.1.12":
     resolution:
       {
-        integrity: sha512-yiZzPbGTS9Sr/JpFl8zHrcIkAofNbFV6k21vIgQN/cY/oxZeXhJv5sc/MBJ5jFKWmWs+oJHw0UXLZjmf931+Vw==,
+        integrity: sha512-XW9O8+Mxx4VpCtkYdMJLZQQwsVryP9wk7cPKDxtXFfwSak6yRh5+2fep/Y0XF/ElBvJHq8bcYdi6aeuai0opZA==,
       }
 
-  "@vitest/runner@4.1.11":
+  "@vitest/runner@4.1.12":
     resolution:
       {
-        integrity: sha512-LztvUgdwMNJMIkj3hQnnxiC2Xy1zNxq928W/xhjCLaNCzqTZOudjwbQf6v9IntZGPw132i2Lq2rgTRZHD3JHNw==,
+        integrity: sha512-NKlVKCr5QnCe8jijdMnmkpHHU+WTqiLFR6G0pHji9uRjXK9xJl1k1nTw6F3pOOj2PDcsDt2GKQMI7wIsaT491w==,
       }
 
-  "@vitest/snapshot@4.1.11":
+  "@vitest/snapshot@4.1.12":
     resolution:
       {
-        integrity: sha512-pN7ikn1ON7h8ee4gIAp4AzyK+zBtJPzVbqOgu5LCEh4VaJVbPQcgYQYJIMGQPXVeJJq1fnfazis7a5pFNPahog==,
+        integrity: sha512-ko1y1Qgb/slzQ9mr+b89Cuqud8WG1TKtsPD8r7ZUBdvVOGt85Af2HwCqHujrhwJq95hs/9RM7fcAPg57o1vlzw==,
       }
 
-  "@vitest/spy@4.1.11":
+  "@vitest/spy@4.1.12":
     resolution:
       {
-        integrity: sha512-apNa/prQy2qCeywhnixOHPRCgGNhvg7T4Dapfl1GahLp/R+uhBm5cPyFoNVyqsNd2h1nJxL6BqqdIjiABL60YA==,
+        integrity: sha512-RGq9x4JNGNTZHEJxvN0oSiJjeSCExm0n2gZKKJZHY9cX5AVA6M7VJILBT3ZJ/tJ/0J9uWT7fETV9/btoi//vSg==,
       }
 
-  "@vitest/utils@4.1.11":
+  "@vitest/utils@4.1.12":
     resolution:
       {
-        integrity: sha512-zTCVGpyFsGWBhllOyKlTw/vnr6D9qxsfSDyfbyZmTyjHw5N/VuvzHpHoQjm2ZJzn4RJgx5w4r7V0er69CmLgPQ==,
+        integrity: sha512-Q3awXrwOfEV+qc3WmO5ONyE0yO7Q1gQ9/oyHxGLZ/pl7N3NO/ZztqQwKLuwMkV+CA1JYSIeO3gkHnRDIo4AVaA==,
       }
 
   "@vladfrangu/async_event_emitter@2.4.7":
@@ -3442,10 +3443,10 @@ packages:
         integrity: sha512-KzIbH/9tXat2u30jf+smMwFCsno4wHVdNmzFyL+T/L3UGqqk6JKfVqOFOZEpZSHADH1k40ab6NUIXZq422ov3Q==,
       }
 
-  vite@7.3.6:
+  vite@7.3.7:
     resolution:
       {
-        integrity: sha512-4XP60spRGjSZFf1qYH+dJIkK2znL3zQfl9KkOV9MkkRR/3Dls0dxaBsQPTloEc5BLXWPL9vsOxopxyKoMmDueg==,
+        integrity: sha512-AHEzTORMbi7/7aXp7w7KZ5+DCUdSeLsJz0grY8xHpc9DHdYb0vQu6DqJfm2tOw3gDExNgPgnJTXxM6syYFHaCA==,
       }
     engines: { node: ^20.19.0 || >=22.12.0 }
     hasBin: true
@@ -3485,10 +3486,10 @@ packages:
       yaml:
         optional: true
 
-  vitest@4.1.11:
+  vitest@4.1.12:
     resolution:
       {
-        integrity: sha512-fhACrNXUidIbGSBr5FlbuBkO7VWC1ZyLl0DO4CU2DrQoAPxX84Ysxs+HeGQpii5lZWV1Q4gBZTTu49mF+A6Edw==,
+        integrity: sha512-5eWdz2yb3ajxWF3C8C4TjkXl7FGm3n2E/VlazALrQHzK7nYMSGFnCZto0bbPNl77AwkOZVLk0YnBAejUu0NiWA==,
       }
     engines: { node: ^20.0.0 || ^22.0.0 || >=24.0.0 }
     hasBin: true
@@ -3496,15 +3497,15 @@ packages:
       "@edge-runtime/vm": "*"
       "@opentelemetry/api": ^1.9.0
       "@types/node": ^20.0.0 || ^22.0.0 || >=24.0.0
-      "@vitest/browser-playwright": 4.1.11
-      "@vitest/browser-preview": 4.1.11
-      "@vitest/browser-webdriverio": 4.1.11
-      "@vitest/coverage-istanbul": 4.1.11
-      "@vitest/coverage-v8": 4.1.11
-      "@vitest/ui": 4.1.11
+      "@vitest/browser-playwright": 4.1.12
+      "@vitest/browser-preview": 4.1.12
+      "@vitest/browser-webdriverio": ^4.1.11
+      "@vitest/coverage-istanbul": 4.1.12
+      "@vitest/coverage-v8": 4.1.12
+      "@vitest/ui": 4.1.12
       happy-dom: "*"
       jsdom: "*"
-      vite: ^6.0.0 || ^7.0.0 || ^8.0.0
+      vite: 7.3.7
     peerDependenciesMeta:
       "@edge-runtime/vm":
         optional: true
@@ -3881,12 +3882,12 @@ snapshots:
       - bufferutil
       - utf-8-validate
 
-  "@earendil-works/pi-ai@0.99.2(@aws-sdk/credential-provider-node@3.972.86)(@modelcontextprotocol/sdk@1.31.0(supports-color@7.2.0)(zod@3.25.76))(@smithy/signature-v4@5.7.4)(supports-color@7.2.0)(undici@8.10.2)(ws@8.21.0)(zod@3.25.76)":
+  "@earendil-works/pi-ai@0.99.2(@aws-sdk/credential-provider-node@3.972.86)(@modelcontextprotocol/sdk@1.32.0(supports-color@7.2.0)(zod@3.25.76))(@smithy/signature-v4@5.7.4)(supports-color@7.2.0)(undici@8.10.2)(ws@8.21.0)(zod@3.25.76)":
     dependencies:
       "@anthropic-ai/sdk": 0.124.0(zod@3.25.76)
       "@aws-sdk/client-bedrock-runtime": 3.1127.0
       "@earendil-works/pi-telemetry": 0.99.2
-      "@google/genai": 2.21.0(@modelcontextprotocol/sdk@1.31.0(supports-color@7.2.0)(zod@3.25.76))(supports-color@7.2.0)
+      "@google/genai": 2.21.0(@modelcontextprotocol/sdk@1.32.0(supports-color@7.2.0)(zod@3.25.76))(supports-color@7.2.0)
       "@smithy/node-http-handler": 4.12.1
       http-proxy-agent: 9.1.0(supports-color@7.2.0)
       https-proxy-agent: 9.1.0(supports-color@7.2.0)
@@ -3991,14 +3992,14 @@ snapshots:
   "@esbuild/win32-x64@0.28.1":
     optional: true
 
-  "@google/genai@2.21.0(@modelcontextprotocol/sdk@1.31.0(supports-color@7.2.0)(zod@3.25.76))(supports-color@7.2.0)":
+  "@google/genai@2.21.0(@modelcontextprotocol/sdk@1.32.0(supports-color@7.2.0)(zod@3.25.76))(supports-color@7.2.0)":
     dependencies:
       google-auth-library: 10.9.1(supports-color@7.2.0)
       p-retry: 4.6.2
       protobufjs: 7.6.5
       ws: 8.21.0
     optionalDependencies:
-      "@modelcontextprotocol/sdk": 1.31.0(supports-color@7.2.0)(zod@3.25.76)
+      "@modelcontextprotocol/sdk": 1.32.0(supports-color@7.2.0)(zod@3.25.76)
     transitivePeerDependencies:
       - bufferutil
       - supports-color
@@ -4132,12 +4133,12 @@ snapshots:
 
   "@letta-ai/letta-code@0.34.14(patch_hash=229abe3be7a2d2e85c71ad2a367de532338e4cbc79459f0a98c73de14c61ede2)(@aws-sdk/credential-provider-node@3.972.86)(@smithy/signature-v4@5.7.4)(@types/node@22.20.1)(react-dom@19.3.1(react@18.2.0))(supports-color@7.2.0)(undici@8.10.2)(zod@3.25.76)":
     dependencies:
-      "@earendil-works/pi-ai": 0.99.2(@aws-sdk/credential-provider-node@3.972.86)(@modelcontextprotocol/sdk@1.31.0(supports-color@7.2.0)(zod@3.25.76))(@smithy/signature-v4@5.7.4)(supports-color@7.2.0)(undici@8.10.2)(ws@8.21.0)(zod@3.25.76)
+      "@earendil-works/pi-ai": 0.99.2(@aws-sdk/credential-provider-node@3.972.86)(@modelcontextprotocol/sdk@1.32.0(supports-color@7.2.0)(zod@3.25.76))(@smithy/signature-v4@5.7.4)(supports-color@7.2.0)(undici@8.10.2)(ws@8.21.0)(zod@3.25.76)
       "@janhapke/sharp-electron": sharp@0.35.5(@types/node@22.20.1)
       "@letta-ai/letta-agent-sdk": 0.8.38(@letta-ai/letta-code@0.34.14(patch_hash=229abe3be7a2d2e85c71ad2a367de532338e4cbc79459f0a98c73de14c61ede2)(@aws-sdk/credential-provider-node@3.972.86)(@smithy/signature-v4@5.7.4)(@types/node@22.20.1)(react-dom@19.3.1(react@18.2.0))(supports-color@7.2.0)(undici@8.10.2)(zod@3.25.76))
       "@letta-ai/letta-client": 1.12.1
       "@letta-ai/trajectory": 0.2.0
-      "@modelcontextprotocol/sdk": 1.31.0(supports-color@7.2.0)(zod@3.25.76)
+      "@modelcontextprotocol/sdk": 1.32.0(supports-color@7.2.0)(zod@3.25.76)
       "@pierre/diffs": 1.2.2(react-dom@19.3.1(react@18.2.0))(react@18.2.0)
       "@scarf/scarf": 1.4.0
       "@shikijs/langs": 4.0.2
@@ -4173,7 +4174,7 @@ snapshots:
 
   "@letta-ai/trajectory@0.2.0": {}
 
-  "@modelcontextprotocol/sdk@1.31.0(supports-color@7.2.0)(zod@3.25.76)":
+  "@modelcontextprotocol/sdk@1.32.0(supports-color@7.2.0)(zod@3.25.76)":
     dependencies:
       "@hono/node-server": 2.1.5(hono@4.13.13)
       ajv: 8.20.0
@@ -4467,44 +4468,44 @@ snapshots:
 
   "@ungap/structured-clone@1.4.0": {}
 
-  "@vitest/expect@4.1.11":
+  "@vitest/expect@4.1.12":
     dependencies:
       "@standard-schema/spec": 1.1.0
       "@types/chai": 5.2.3
-      "@vitest/spy": 4.1.11
-      "@vitest/utils": 4.1.11
+      "@vitest/spy": 4.1.12
+      "@vitest/utils": 4.1.12
       chai: 6.3.0
       tinyrainbow: 3.2.0
 
-  "@vitest/mocker@4.1.11(vite@7.3.6(@types/node@22.20.1)(tsx@4.23.0)(yaml@2.9.0))":
+  "@vitest/mocker@4.1.12(vite@7.3.7(@types/node@22.20.1)(tsx@4.23.0)(yaml@2.9.0))":
     dependencies:
-      "@vitest/spy": 4.1.11
+      "@vitest/spy": 4.1.12
       estree-walker: 3.0.3
       magic-string: 0.30.21
     optionalDependencies:
-      vite: 7.3.6(@types/node@22.20.1)(tsx@4.23.0)(yaml@2.9.0)
+      vite: 7.3.7(@types/node@22.20.1)(tsx@4.23.0)(yaml@2.9.0)
 
-  "@vitest/pretty-format@4.1.11":
+  "@vitest/pretty-format@4.1.12":
     dependencies:
       tinyrainbow: 3.2.0
 
-  "@vitest/runner@4.1.11":
+  "@vitest/runner@4.1.12":
     dependencies:
-      "@vitest/utils": 4.1.11
+      "@vitest/utils": 4.1.12
       pathe: 2.0.3
 
-  "@vitest/snapshot@4.1.11":
+  "@vitest/snapshot@4.1.12":
     dependencies:
-      "@vitest/pretty-format": 4.1.11
-      "@vitest/utils": 4.1.11
+      "@vitest/pretty-format": 4.1.12
+      "@vitest/utils": 4.1.12
       magic-string: 0.30.21
       pathe: 2.0.3
 
-  "@vitest/spy@4.1.11": {}
+  "@vitest/spy@4.1.12": {}
 
-  "@vitest/utils@4.1.11":
+  "@vitest/utils@4.1.12":
     dependencies:
-      "@vitest/pretty-format": 4.1.11
+      "@vitest/pretty-format": 4.1.12
       convert-source-map: 2.0.0
       tinyrainbow: 3.2.0
 
@@ -5739,7 +5740,7 @@ snapshots:
       "@types/unist": 3.0.3
       vfile-message: 4.0.3
 
-  vite@7.3.6(@types/node@22.20.1)(tsx@4.23.0)(yaml@2.9.0):
+  vite@7.3.7(@types/node@22.20.1)(tsx@4.23.0)(yaml@2.9.0):
     dependencies:
       esbuild: 0.28.1
       fdir: 6.5.0(picomatch@4.0.5)
@@ -5753,15 +5754,15 @@ snapshots:
       tsx: 4.23.0
       yaml: 2.9.0
 
-  vitest@4.1.11(@types/node@22.20.1)(vite@7.3.6(@types/node@22.20.1)(tsx@4.23.0)(yaml@2.9.0)):
+  vitest@4.1.12(@types/node@22.20.1)(vite@7.3.7(@types/node@22.20.1)(tsx@4.23.0)(yaml@2.9.0)):
     dependencies:
-      "@vitest/expect": 4.1.11
-      "@vitest/mocker": 4.1.11(vite@7.3.6(@types/node@22.20.1)(tsx@4.23.0)(yaml@2.9.0))
-      "@vitest/pretty-format": 4.1.11
-      "@vitest/runner": 4.1.11
-      "@vitest/snapshot": 4.1.11
-      "@vitest/spy": 4.1.11
-      "@vitest/utils": 4.1.11
+      "@vitest/expect": 4.1.12
+      "@vitest/mocker": 4.1.12(vite@7.3.7(@types/node@22.20.1)(tsx@4.23.0)(yaml@2.9.0))
+      "@vitest/pretty-format": 4.1.12
+      "@vitest/runner": 4.1.12
+      "@vitest/snapshot": 4.1.12
+      "@vitest/spy": 4.1.12
+      "@vitest/utils": 4.1.12
       es-module-lexer: 2.3.2
       expect-type: 1.4.0
       magic-string: 0.30.21
@@ -5773,7 +5774,7 @@ snapshots:
       tinyexec: 1.3.1
       tinyglobby: 0.2.17
       tinyrainbow: 3.2.0
-      vite: 7.3.6(@types/node@22.20.1)(tsx@4.23.0)(yaml@2.9.0)
+      vite: 7.3.7(@types/node@22.20.1)(tsx@4.23.0)(yaml@2.9.0)
       why-is-node-running: 2.3.0
     optionalDependencies:
       "@types/node": 22.20.1

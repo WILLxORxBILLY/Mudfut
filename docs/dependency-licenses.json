@@ -221,7 +221,7 @@
   },
   {
     "name": "@modelcontextprotocol/sdk",
-    "version": "1.31.0",
+    "version": "1.32.0",
     "license": "MIT"
   },
   {
@@ -481,37 +481,37 @@
   },
   {
     "name": "@vitest/expect",
-    "version": "4.1.11",
+    "version": "4.1.12",
     "license": "MIT"
   },
   {
     "name": "@vitest/mocker",
-    "version": "4.1.11",
+    "version": "4.1.12",
     "license": "MIT"
   },
   {
     "name": "@vitest/pretty-format",
-    "version": "4.1.11",
+    "version": "4.1.12",
     "license": "MIT"
   },
   {
     "name": "@vitest/runner",
-    "version": "4.1.11",
+    "version": "4.1.12",
     "license": "MIT"
   },
   {
     "name": "@vitest/snapshot",
-    "version": "4.1.11",
+    "version": "4.1.12",
     "license": "MIT"
   },
   {
     "name": "@vitest/spy",
-    "version": "4.1.11",
+    "version": "4.1.12",
     "license": "MIT"
   },
   {
     "name": "@vitest/utils",
-    "version": "4.1.11",
+    "version": "4.1.12",
     "license": "MIT"
   },
   {
@@ -593,11 +593,6 @@
     "name": "base64-js",
     "version": "1.5.1",
     "license": "MIT"
-  },
-  {
-    "name": "benchmark",
-    "version": "1.0.0",
-    "license": "ISC"
   },
   {
     "name": "bignumber.js",
@@ -1205,14 +1200,14 @@
     "license": "MIT"
   },
   {
-    "name": "lru-cache",
-    "version": "11.5.3",
-    "license": "BlueOak-1.0.0"
-  },
-  {
     "name": "lru_map",
     "version": "0.4.1",
     "license": "MIT"
+  },
+  {
+    "name": "lru-cache",
+    "version": "11.5.3",
+    "license": "BlueOak-1.0.0"
   },
   {
     "name": "luxon",
@@ -1921,12 +1916,12 @@
   },
   {
     "name": "vite",
-    "version": "7.3.6",
+    "version": "7.3.7",
     "license": "MIT"
   },
   {
     "name": "vitest",
-    "version": "4.1.11",
+    "version": "4.1.12",
     "license": "MIT"
   },
   {
