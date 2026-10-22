@@ -7,4 +7,3 @@ available, ask for a private reporting channel without disclosing sensitive data
 
 Include affected versions and a synthetic reproduction. The project does not
 accept production credentials or access to a community database as a diagnostic.
-Keep the local graph bound to loopback; hosted access is outside its security model.

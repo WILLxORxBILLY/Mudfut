@@ -5,10 +5,11 @@ runtime requires a dedicated loopback database and role named `mudfut_pilot`.
 These are local installation names, not connections to any existing server.
 Windows and hosted multi-user deployment are not validated in this release.
 
-## 1. Install and try the graph
+## 1. Install dependencies
 
-Install from the root lockfile, then run `pnpm graph --demo`. That mode needs no
-credentials and makes no Discord, model or database connection.
+Follow the [repository installation steps](../README.md#install) to clone the
+source and install from the root lockfile. The model-free checks can run without
+Discord credentials or a model login; starting the bot requires the setup below.
 
 ## 2. Create private state and PostgreSQL
 
@@ -88,15 +89,6 @@ The supervisor starts exactly one worker. Ctrl-C asks it to checkpoint and stop;
 inspect any ambiguous delivery or held failure before resuming. Database schema
 initialization happens only in your configured pilot database. No archive sweep
 is started automatically without an explicit historical selection.
-
-To inspect this installation's graph from another terminal:
-
-```sh
-pnpm graph
-```
-
-Open <http://127.0.0.1:4317>. With an empty installation the graph can be empty;
-that is not replaced with fictional records. Demo mode is always explicit.
 
 ## Before inviting real conversation
 

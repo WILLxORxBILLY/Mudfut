@@ -1,9 +1,9 @@
 # Contributing
 
-Start with the fictional graph (`pnpm graph --demo`) and model-free checks. Open an
+Start with the model-free checks. Open an
 issue describing the behavior and a synthetic reproduction before a large change.
 Do not submit conversation exports, real member IDs, credentials, production
-configuration or private model/evaluation results. Screenshots should use demo mode.
+configuration or private model/evaluation results. Screenshots must use fictional data.
 
 Use Node 22 and the root lockfile. Run `pnpm test`, `pnpm letta:fixtures` with
 PostgreSQL 16 binaries, and `pnpm format:check`. Preserve dependency patches and

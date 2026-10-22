@@ -1,7 +1,7 @@
 # Optional historical archive
 
-The live bot can run without an archive. Historical search, review and coverage
-reconciliation can also read an existing PostgreSQL archive through a separate
+The live bot can run without an archive. Historical search and review can also
+read an existing PostgreSQL archive through a separate
 loopback role named `mudfut_history_reader`. This is an integration contract, not
 a full-server crawler or a claim that every Discord message has been captured.
 
@@ -18,10 +18,9 @@ the pilot configuration. The sample file in `examples/` has placeholders only.
 Keep host `127.0.0.1` and user `mudfut_history_reader`; choose your own archive
 database and password. No database contents are supplied with this project.
 
-The graph reads metadata/counts from that table in bounded read-only transactions.
 Historical model work uses selected manifests and exact current Discord validation;
 selection, context exposure, committed review and representation are different
-stages. An archive error is shown as unavailable, never as zero coverage.
+stages. Archive availability alone does not establish complete Discord coverage.
 
 Stage a bounded, immutable selection with `pnpm history stage /absolute/private/selection.json`
 or a knowledge manifest with `pnpm knowledge stage /absolute/private/manifest.json`.
