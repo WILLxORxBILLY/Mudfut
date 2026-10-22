@@ -824,8 +824,11 @@ aside {
   stroke-width: 5px;
   stroke-linejoin: round;
 }
-#graph .node.dimmed {
-  opacity: 0.58;
+#graph .node.dimmed .node-shape {
+  opacity: 0.7;
+}
+#graph .node.dimmed .node-label {
+  fill: #4e6255;
 }
 #graph .node.selected .node-shape {
   stroke: #254f40;
