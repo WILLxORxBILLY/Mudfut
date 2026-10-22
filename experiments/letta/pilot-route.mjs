@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
 import pg from "pg";
 import { assertPrivateState, saveJson, state } from "./runtime.mjs";
-import { snowflake, validateScope } from "./pilot-store.mjs";
+import { snowflake, validateScope, replyChannels } from "./pilot-store.mjs";
 
 async function privateJson(path) {
   const stat = await lstat(path);
@@ -16,6 +16,8 @@ async function privateJson(path) {
 
 export function routeSwitchPlan({ config, meta, outbox, work }, target) {
   const current = validateScope(config);
+  if (replyChannels(current).length > 1)
+    throw new Error("Single-route switch cannot replace a multi-channel installation");
   if (!snowflake(target?.guildId) || !snowflake(target?.channelId))
     throw new Error("Invalid replacement pilot route");
   if (meta?.scope?.guildId !== current.guildId || meta?.scope?.channelId !== current.channelId)
@@ -28,7 +30,12 @@ export function routeSwitchPlan({ config, meta, outbox, work }, target) {
     previous: { guildId: current.guildId, channelId: current.channelId },
     next: { guildId: target.guildId, channelId: target.channelId },
     changed: current.guildId !== target.guildId || current.channelId !== target.channelId,
-    config: { ...current, guildId: target.guildId, channelId: target.channelId },
+    config: {
+      ...current,
+      guildId: target.guildId,
+      channelId: target.channelId,
+      ...(current.replyChannelIds ? { replyChannelIds: [target.channelId] } : {}),
+    },
   };
 }
 
@@ -126,7 +133,10 @@ export async function runRouteCommand(command, target) {
       const locked = (await db.query("SELECT scope FROM pilot_meta WHERE id FOR UPDATE")).rows[0];
       routeSwitchPlan({ config, meta: locked, outbox: outbox.rows, work: work.rows }, report.next);
       await db.query(
-        `UPDATE pilot_meta SET scope=$1,cursor=NULL,epoch=epoch+1,rebuild=false,relearning=false,
+        "ALTER TABLE pilot_meta ADD COLUMN IF NOT EXISTS cursors jsonb NOT NULL DEFAULT '{}'",
+      );
+      await db.query(
+        `UPDATE pilot_meta SET cursors='{}',scope=$1,cursor=NULL,epoch=epoch+1,rebuild=false,relearning=false,
          invalid_sources='{}'`,
         [report.config],
       );

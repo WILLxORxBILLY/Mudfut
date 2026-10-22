@@ -31,9 +31,21 @@ export const snowflake = (s) => typeof s === "string" && /^[0-9]{17,20}$/.test(s
 export const hasTextEvidence = (source) =>
   typeof source?.content === "string" && source.content.trim().length > 0;
 
+export const replyChannels = (config) =>
+  config.replyChannelIds === undefined ? [config.channelId] : config.replyChannelIds;
+
 export function validateScope(config) {
   if (!config || !snowflake(config.guildId) || !snowflake(config.channelId))
     throw new Error("Invalid pilot guild/channel scope");
+  const channels = replyChannels(config);
+  if (
+    !Array.isArray(channels) ||
+    !channels.length ||
+    channels.some((id) => !snowflake(id)) ||
+    new Set(channels).size !== channels.length ||
+    !channels.includes(config.channelId)
+  )
+    throw new Error("Invalid pilot reply channels; include the primary channel exactly once");
   return { ...config, historyScope: config.historyScope ?? [] };
 }
 
@@ -61,10 +73,8 @@ export function sourceRecord(message, guildId, channelId) {
   };
 }
 
-// ponytail: one channel and one worker, with a session advisory lock serializing
-// memory and delivery. Sources are paged; revisioned memory and targeted
-// invalidation preserve understanding without a lifetime source limit. Multiple
-// channels need per-agent queues before adding writers.
+// ponytail: channels share one serial memory writer and delivery queue. Throughput
+// is bounded by one model turn; add coordinated per-agent queues before adding writers.
 export async function pilotStore(db, config) {
   validateScope(config);
   const lock = await db.query("SELECT pg_try_advisory_lock(1560387, 1127029) AS acquired");
@@ -90,6 +100,7 @@ export async function pilotStore(db, config) {
       source_id text PRIMARY KEY, content text NOT NULL, epoch integer NOT NULL,
       status text NOT NULL DEFAULT 'ready', discord_id text,
       attempted_at timestamptz, error text, receipt jsonb);
+    ALTER TABLE pilot_meta ADD COLUMN IF NOT EXISTS cursors jsonb NOT NULL DEFAULT '{}';
     ALTER TABLE pilot_meta ADD COLUMN IF NOT EXISTS invalid_sources text[] NOT NULL DEFAULT '{}';
     ALTER TABLE pilot_meta ADD COLUMN IF NOT EXISTS memory_version integer NOT NULL DEFAULT 1;
     ALTER TABLE pilot_sources ADD COLUMN IF NOT EXISTS learnable boolean NOT NULL DEFAULT true;
@@ -116,18 +127,26 @@ export async function pilotStore(db, config) {
   );
   const { historyFailureSchema } = await import("./pilot-history-failures.mjs");
   await db.query(historyFailureSchema);
-  await db.query(
-    "UPDATE pilot_sources SET learnable=false,learned=true WHERE source->>'guildId'<>$1 OR source->>'channelId'<>$2",
-    [config.guildId, config.channelId],
-  );
   await db.query("INSERT INTO pilot_meta(id,scope) VALUES(true,$1) ON CONFLICT DO NOTHING", [
     config,
   ]);
   const saved = (await db.query("SELECT scope FROM pilot_meta")).rows[0].scope;
-  if (saved.guildId !== config.guildId || saved.channelId !== config.channelId)
+  if (
+    saved.guildId !== config.guildId ||
+    saved.channelId !== config.channelId ||
+    replyChannels(saved).some((id) => !replyChannels(config).includes(id))
+  )
     throw new Error(
       "Pilot live channel differs from persisted configuration; use a separate state/database",
     );
+  await db.query(
+    "UPDATE pilot_sources SET learnable=false,learned=true WHERE source->>'guildId'<>$1 OR NOT (source->>'channelId'=ANY($2::text[]))",
+    [config.guildId, replyChannels(config)],
+  );
+  // Preserve the original cursor while migrating to independent channel progress.
+  await db.query(`UPDATE pilot_meta SET cursors=jsonb_set(cursors,ARRAY[scope->>'channelId'],to_jsonb(cursor))
+    WHERE cursor IS NOT NULL AND NOT (cursors ? (scope->>'channelId'))`);
+  await db.query("UPDATE pilot_meta SET scope=$1", [config]);
   const reclassified = (
     await db.query(`UPDATE pilot_sources SET addressed=true,learned=false
     WHERE NOT addressed AND NOT deleted AND source->>'replyTo' IN
@@ -252,11 +271,11 @@ export async function pilotStore(db, config) {
     const direct = (
       await db.query(
         `SELECT s.* FROM pilot_sources s WHERE NOT deleted AND addressed AND learnable
-        AND source->>'guildId'=$1 AND source->>'channelId'=$2
+        AND source->>'guildId'=$1 AND source->>'channelId'=ANY($2::text[])
         AND NOT EXISTS(SELECT 1 FROM pilot_source_holds h WHERE h.source_id=s.id)
         AND NOT EXISTS(SELECT 1 FROM pilot_outbox o WHERE o.source_id=s.id)
         ORDER BY id::numeric LIMIT 1`,
-        [config.guildId, config.channelId],
+        [config.guildId, replyChannels(config)],
       )
     ).rows[0];
     if (direct) return { rows: [direct], replyTo: direct.id };
@@ -540,8 +559,8 @@ export async function pilotStore(db, config) {
         await db.query("DELETE FROM pilot_outbox WHERE status='ready'");
       });
     },
-    async isAddressed(source, botId) {
-      return (
+    async isAddressed(source, botId, readParent) {
+      const known =
         new RegExp(`<@!?${botId}>`).test(source.content) ||
         Boolean(
           source.replyTo &&
@@ -550,15 +569,24 @@ export async function pilotStore(db, config) {
               source.replyTo,
             ])
           ).rowCount,
-        )
+        );
+      if (known || !source.replyTo || !readParent) return known;
+      const parent = await readParent(source.channelId, source.replyTo);
+      return (
+        parent?.id === source.replyTo &&
+        parent.channel_id === source.channelId &&
+        parent.author?.id === botId
       );
     },
     async context(beforeId) {
+      const trigger = (await db.query("SELECT source FROM pilot_sources WHERE id=$1", [beforeId]))
+        .rows[0]?.source;
+      const channelId = trigger?.channelId ?? config.channelId;
       const recent = (
         await db.query(
           `SELECT source FROM pilot_sources WHERE NOT deleted
         AND source->>'channelId'=$1 AND id::numeric < $2::numeric ORDER BY id::numeric DESC LIMIT 8`,
-          [config.channelId, beforeId],
+          [channelId, beforeId],
         )
       ).rows
         .reverse()
@@ -567,8 +595,9 @@ export async function pilotStore(db, config) {
         await db.query(
           `SELECT source_id,content FROM pilot_outbox WHERE status='sent'
         AND epoch=(SELECT epoch FROM pilot_meta) AND source_id::numeric < $1::numeric
+        AND EXISTS(SELECT 1 FROM pilot_sources s WHERE s.id=source_id AND s.source->>'channelId'=$2)
         ORDER BY source_id::numeric DESC LIMIT 4`,
-          [beforeId],
+          [beforeId, channelId],
         )
       ).rows.reverse();
       return {
@@ -577,8 +606,15 @@ export async function pilotStore(db, config) {
         note: "Bot replies are conversational context, never evidence about members.",
       };
     },
-    async cursor(id) {
-      await db.query("UPDATE pilot_meta SET cursor=$1", [id]);
+    async cursor(id, channelId = config.channelId) {
+      if (!snowflake(id) || !replyChannels(config).includes(channelId))
+        throw new Error("Invalid live cursor");
+      await db.query(
+        `UPDATE pilot_meta SET cursors=jsonb_set(cursors,ARRAY[$2::text],to_jsonb($1::text)),
+        cursor=CASE WHEN $2=scope->>'channelId' THEN $1::text ELSE cursor END
+        WHERE (cursors->>$2) IS NULL OR (cursors->>$2)::numeric < $1::text::numeric`,
+        [id, channelId],
+      );
     },
     async reset(memory) {
       if (!(await meta()).rebuild) return;
@@ -606,11 +642,27 @@ export async function deliver(store, discord, botId, channelId, record) {
       "SELECT * FROM pilot_outbox WHERE status IN ('ready','sending') ORDER BY source_id::numeric",
     )
   ).rows;
+  const scope = validateScope((await store.meta()).scope);
   for (const row of pending) {
+    const source = (
+      await store.db.query("SELECT * FROM pilot_sources WHERE id=$1", [row.source_id])
+    ).rows[0];
+    const targetChannel = source?.source?.channelId;
+    if (
+      !source ||
+      source.source.guildId !== scope.guildId ||
+      !replyChannels(scope).includes(targetChannel)
+    ) {
+      await store.db.query(
+        "UPDATE pilot_outbox SET status='held',error='Source outside live reply scope' WHERE source_id=$1",
+        [row.source_id],
+      );
+      continue;
+    }
     if (row.status === "sending") {
       // Nonce de-duplication lasts only minutes. Reconcile by reply reference;
       // an ambiguous send is HELD, never blindly retried even after a long outage.
-      const messages = await discord.after(channelId, row.source_id);
+      const messages = await discord.after(targetChannel, row.source_id);
       const matches = messages.filter(
         (m) => m.author.id === botId && m.message_reference?.message_id === row.source_id,
       );
@@ -633,9 +685,6 @@ export async function deliver(store, discord, botId, channelId, record) {
       });
       continue;
     }
-    const source = (
-      await store.db.query("SELECT * FROM pilot_sources WHERE id=$1", [row.source_id])
-    ).rows[0];
     if (!source || source.deleted || row.epoch !== (await store.meta()).epoch) {
       await store.db.query(
         "UPDATE pilot_outbox SET status='held',error='Stale or deleted source' WHERE source_id=$1",
@@ -647,14 +696,14 @@ export async function deliver(store, discord, botId, channelId, record) {
       "UPDATE pilot_outbox SET status='sending',attempted_at=now() WHERE source_id=$1",
       [row.source_id],
     );
-    const sent = await discord.send(channelId, {
+    const sent = await discord.send(targetChannel, {
       content: row.content,
       nonce: row.source_id,
       enforce_nonce: true,
       allowed_mentions: { parse: [], replied_user: false },
       message_reference: {
         message_id: row.source_id,
-        channel_id: channelId,
+        channel_id: targetChannel,
         fail_if_not_exists: true,
       },
     });
