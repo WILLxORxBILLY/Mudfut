@@ -1,0 +1,13 @@
+{
+  "id": "example-history-selection",
+  "windows": [
+    {
+      "key": "example-discussion",
+      "label": "A fictional bounded discussion",
+      "guildId": "111111111111111111",
+      "channelId": "222222222222222222",
+      "start": "2026-01-01T12:00:00Z",
+      "end": "2026-01-01T12:10:00Z"
+    }
+  ]
+}

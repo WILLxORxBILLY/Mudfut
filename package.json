@@ -1,0 +1,38 @@
+{
+  "name": "mudfut",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Self-hosted Discord community memory and source-backed knowledge explorer",
+  "type": "module",
+  "engines": {
+    "node": "22.x"
+  },
+  "packageManager": "pnpm@11.28.2",
+  "scripts": {
+    "graph": "node --env-file-if-exists=.env experiments/letta/knowledge-graph/server.mjs",
+    "start": "node --env-file-if-exists=.env experiments/letta/pilot-supervisor.mjs",
+    "bot:once": "node --env-file-if-exists=.env experiments/letta/pilot.mjs once",
+    "bot:status": "node --env-file-if-exists=.env experiments/letta/pilot.mjs status",
+    "knowledge": "node --env-file-if-exists=.env experiments/letta/community-knowledge-cli.mjs",
+    "history": "node --env-file-if-exists=.env experiments/letta/pilot-history-cli.mjs",
+    "requests": "node --env-file-if-exists=.env experiments/letta/pilot-requests-cli.mjs",
+    "letta:fixtures": "node experiments/letta/fixture-db.mjs fixtures",
+    "letta:check": "node --test experiments/letta/check.test.mjs",
+    "letta:live": "node experiments/letta/fixture-db.mjs live",
+    "letta:graph": "node --env-file-if-exists=.env experiments/letta/knowledge-graph/server.mjs",
+    "letta:graph:check": "node --test experiments/letta/knowledge-graph.test.mjs",
+    "test": "node --test experiments/letta/*.test.mjs",
+    "format:check": "prettier --check ."
+  },
+  "dependencies": {
+    "@letta-ai/letta-agent-sdk": "0.8.44",
+    "@letta-ai/letta-code": "0.34.14",
+    "discord.js": "14.27.0",
+    "pg": "8.22.0"
+  },
+  "devDependencies": {
+    "prettier": "3.9.5",
+    "vitest": "4.1.11"
+  },
+  "license": "MIT"
+}

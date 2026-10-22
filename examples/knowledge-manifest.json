@@ -1,0 +1,16 @@
+{
+  "id": "example-community-review-1",
+  "schemaVersion": "community-archive-manifest-v1",
+  "archiveConnectionId": "example-local-archive",
+  "generation": 1,
+  "episodes": [
+    {
+      "key": "example-discussion",
+      "label": "A fictional bounded discussion",
+      "guildId": "111111111111111111",
+      "channelId": "222222222222222222",
+      "sourceIds": ["555555555555555501"],
+      "contextIds": ["555555555555555502"]
+    }
+  ]
+}

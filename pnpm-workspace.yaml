@@ -1,0 +1,10 @@
+allowBuilds:
+  "@google/genai": false
+  "@letta-ai/letta-code": true
+  "@scarf/scarf": false
+  cpu-features: false
+  esbuild: true
+  node-pty: false
+  protobufjs: false
+  sharp: false
+  ssh2: false

@@ -1,0 +1,40 @@
+name: Model-free checks
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: checks-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  fixtures:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22.23.3
+      - name: Install locked dependencies
+        run: |
+          corepack enable
+          pnpm install --frozen-lockfile
+      - name: Check formatting and synthetic logic
+        run: |
+          pnpm format:check
+          pnpm test
+      - name: Install PostgreSQL 16
+        run: sudo apt-get update && sudo apt-get install --yes postgresql-16
+      - name: Exercise disposable PostgreSQL recovery and graph checks
+        env:
+          MUDFUT_PG_BIN: /usr/lib/postgresql/16/bin
+          MUDFUT_CODEX_AUTH_FILE: /nonexistent/no-model-credentials
+        run: pnpm letta:fixtures

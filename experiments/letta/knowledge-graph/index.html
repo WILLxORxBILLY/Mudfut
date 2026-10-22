@@ -1,0 +1,192 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta
+      name="description"
+      content="A private, read-only explorer of attributed community knowledge and archive coverage."
+    />
+    <title>Mudfüt · Knowledge atlas</title>
+    <link rel="stylesheet" href="/style.css" />
+    <script type="module" src="/app.mjs"></script>
+  </head>
+  <body>
+    <a class="skip" href="#workspace">Skip to explorer</a>
+    <header>
+      <div class="brand">
+        <span class="brand-mark" aria-hidden="true">NW</span>
+        <div>
+          <span class="eyebrow">COMMUNITY INTELLIGENCE</span>
+          <h1>Knowledge atlas</h1>
+        </div>
+      </div>
+      <div class="sync">
+        <span id="mode">Read-only local view</span
+        ><button id="refresh" type="button">Refresh from PostgreSQL ↻</button>
+      </div>
+    </header>
+    <div class="intro">
+      <div>
+        <p class="eyebrow">MUDFÜT / LIVING RECORD</p>
+        <h2>Explore the conversation.<br /><span>Keep the evidence in view.</span></h2>
+        <p>
+          People, topics and interpretations, connected to their original messages. Every connection
+          is inspectable.
+        </p>
+      </div>
+      <div class="scope">
+        <span class="dot"></span><strong>Server coverage is unknown</strong>
+        <p>
+          Stored history is a partial inventory. A reviewed message, a claim and a candidate
+          interpretation are different things.
+        </p>
+        <small id="snapshot-time">Waiting for snapshot…</small>
+      </div>
+    </div>
+    <nav aria-label="Workspace views">
+      <button id="explore-tab" aria-current="page" type="button">01 &nbsp; Explore knowledge</button
+      ><button id="coverage-tab" type="button">02 &nbsp; History & coverage</button>
+    </nav>
+    <main id="workspace" tabindex="-1">
+      <p id="notice" role="status" aria-live="polite">Loading the local knowledge snapshot…</p>
+      <section id="explore" aria-label="Knowledge explorer">
+        <form id="filters" class="filters" role="search">
+          <label class="search"
+            >Search knowledge<input
+              id="search"
+              type="search"
+              placeholder="A person, topic, quote or interpretation…"
+              maxlength="300" /></label
+          ><label
+            >Node type<select id="type">
+              <option value="all">All types</option>
+              <option value="person">People</option>
+              <option value="topic">Topics</option>
+              <option value="candidate">Candidates</option>
+              <option value="claim">Claims</option>
+              <option value="message">Original messages</option>
+            </select></label
+          ><label
+            >Status<select id="status">
+              <option value="all">All records</option>
+              <option value="candidate">Current candidates</option>
+              <option value="superseded">Superseded</option>
+              <option value="invalidated">Invalidated</option>
+              <option value="stale">Stale evidence</option>
+              <option value="unavailable">Unavailable evidence</option>
+              <option value="unknown">Unknown evidence</option>
+            </select></label
+          ><button id="clear-focus" type="button">Clear focus</button>
+        </form>
+        <div class="explorer-grid">
+          <div class="map-panel">
+            <div class="panel-head">
+              <div>
+                <span class="eyebrow">CONNECTION MAP</span>
+                <p id="graph-count"></p>
+              </div>
+              <label>Zoom<input id="zoom" type="range" min="70" max="180" value="100" /></label>
+            </div>
+            <div class="legend">
+              <span class="person">● People</span><span class="topic">● Topics</span
+              ><span class="candidate">● Candidates</span><span class="claim">● Claims</span
+              ><span class="message">● Messages</span>
+            </div>
+            <div class="graph-scroll">
+              <svg
+                id="graph"
+                role="img"
+                aria-label="Knowledge connection map. Use the record buttons below for keyboard access."
+              ></svg>
+            </div>
+            <div class="map-caption">
+              Solid lines show recorded relationships. Claim support and contradiction are
+              attributed interpretations. No inferred social ties.
+            </div>
+            <div class="panel-head">
+              <h3>Records in this view</h3>
+              <label
+                >Focus distance<select id="depth">
+                  <option value="1">1 connection</option>
+                  <option value="2">2 connections</option>
+                </select></label
+              >
+            </div>
+            <div id="records" class="records" aria-label="Accessible graph records"></div>
+          </div>
+          <aside id="detail" aria-label="Selected record evidence">
+            <div class="empty-detail">
+              <span class="eyebrow">EVIDENCE INSPECTOR</span>
+              <h3>Start with a record.</h3>
+              <p>
+                Select a node or record to inspect its evidence, qualifications and revision
+                history.
+              </p>
+              <p>Use “Focus connections” to explore a smaller neighborhood.</p>
+            </div>
+          </aside>
+        </div>
+      </section>
+      <section id="coverage" aria-label="History coverage dashboard" hidden>
+        <div class="coverage-header">
+          <div>
+            <span class="eyebrow">A MAP OF THE MAP</span>
+            <h2>What has been accounted for?</h2>
+            <p>
+              These stages overlap. They describe the stores we can read, with no claim of complete
+              server history.
+            </p>
+          </div>
+        </div>
+        <div id="metrics" class="metrics"></div>
+        <div id="coverage-notes" class="coverage-notes"></div>
+        <div class="filters">
+          <label
+            >Channel<select id="coverage-channel">
+              <option value="all">All stored channels</option>
+            </select></label
+          ><label
+            >Month (UTC)<select id="coverage-month">
+              <option value="all">All stored months</option>
+            </select></label
+          >
+        </div>
+        <p id="coverage-summary" role="status"></p>
+        <div class="table-scroll">
+          <table>
+            <caption>
+              Archive rows by channel and month; receipt stages include all stored rows, while
+              usable excludes deleted, blank and thread rows.
+            </caption>
+            <thead>
+              <tr>
+                <th scope="col">Channel / month</th>
+                <th scope="col">Stored</th>
+                <th scope="col">Usable</th>
+                <th scope="col">Reviewed</th>
+                <th scope="col">Context</th>
+                <th scope="col">Represented</th>
+                <th scope="col">Selected</th>
+                <th scope="col">Deferred</th>
+                <th scope="col">Usable without review receipt</th>
+              </tr>
+            </thead>
+            <tbody id="coverage-rows"></tbody>
+          </table>
+        </div>
+        <details>
+          <summary>Bounded selections and provenance</summary>
+          <div id="manifests"></div>
+        </details>
+      </section>
+    </main>
+    <footer>
+      LOCAL / READ ONLY
+      <span
+        >PostgreSQL is authoritative. Refresh rebuilds the view; it does not ingest, learn or change
+        memory.</span
+      >
+    </footer>
+  </body>
+</html>

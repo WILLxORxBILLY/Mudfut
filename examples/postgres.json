@@ -1,0 +1,7 @@
+{
+  "host": "127.0.0.1",
+  "port": 5432,
+  "user": "mudfut_pilot",
+  "password": "CHANGE_ME",
+  "database": "mudfut_pilot"
+}
