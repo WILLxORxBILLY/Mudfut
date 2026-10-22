@@ -894,6 +894,13 @@ test("forum discovery admits only current threads under configured parents", asy
     channel: async (id) => ({ id, guild_id: config.guildId, type: id === forum ? 15 : 0 }),
     activeThreads: async () => ({ threads: active }),
   };
+  await assert.rejects(
+    liveChannelPlan(
+      { ...discord, channel: async (id) => ({ id, guild_id: "111111111111111119", type: 0 }) },
+      scope,
+    ),
+    /Live routes/,
+  );
   const plan = await liveChannelPlan(discord, scope);
   assert.deepEqual((await plan.discover()).channelIds, [config.channelId, thread]);
   active.push({
