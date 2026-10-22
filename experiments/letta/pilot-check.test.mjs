@@ -18,6 +18,7 @@ import {
   currentSources,
 } from "./pilot-discord.mjs";
 import { retryableFailure } from "./pilot-supervisor.mjs";
+import { pollLiveChannels, liveSource } from "./pilot-live-channels.mjs";
 import { timingTrace } from "./pilot-timing.mjs";
 import { digest } from "./pilot-store.mjs";
 import {
@@ -703,3 +704,138 @@ test("Discord GET timeouts retry within bounds and remain recoverable after exha
   );
   assert.equal(retryableFailure(forbidden), false);
 });
+
+test("live channels poll independent cursors and reject cross-channel responses", async () => {
+  const second = "222222222222222223";
+  const scope = { ...config, replyChannelIds: [config.channelId, second] };
+  for (const replyChannelIds of [null, [], [second], [config.channelId, config.channelId], "*"])
+    assert.throws(() => validateScope({ ...config, replyChannelIds }));
+  const reads = [];
+  const meta = { cursors: { [config.channelId]: c, [second]: a } };
+  const store = { meta: async () => structuredClone(meta) };
+  const discord = {
+    after: async (channel, cursor) => {
+      reads.push([channel, cursor]);
+      return channel === second ? [{ ...message(b), channel_id: second }] : [];
+    },
+  };
+  const messages = await pollLiveChannels(store, discord, scope);
+  assert.deepEqual(reads, [
+    [config.channelId, c],
+    [second, a],
+  ]);
+  assert.equal(messages[0].id, b, "busy primary channel cannot advance another channel");
+  assert.equal(liveSource(messages[0], scope).channelId, second);
+  assert.throws(() => liveSource({ ...message(a), channel_id: "999999999999999999" }, scope));
+  await assert.rejects(
+    pollLiveChannels(store, { ...discord, after: async () => [message(a)] }, scope),
+    /different channel/,
+  );
+  await assert.rejects(
+    pollLiveChannels(
+      store,
+      {
+        after: async () => {
+          throw new Error("offline");
+        },
+      },
+      scope,
+    ),
+    /offline/,
+  );
+  assert.equal(meta.cursors[second], a, "failed polls never commit progress");
+});
+
+test(
+  "multi-channel durable routing, context, restart and ambiguous delivery",
+  { skip: process.env.CHECK_DATABASE !== "1" },
+  async () => {
+    const credentials = JSON.parse(await readFile(join(state, "postgres.json"), "utf8"));
+    const db = new pg.Client(credentials);
+    await db.connect();
+    const schema = "routes_" + Date.now();
+    await db.query(`CREATE SCHEMA ${schema}`);
+    await db.query(`SET search_path TO ${schema}`);
+    const second = "222222222222222223";
+    const scope = { ...config, replyChannelIds: [config.channelId, second] };
+    try {
+      let store = await pilotStore(db, config);
+      await store.cursor(c);
+      await db.query("SELECT pg_advisory_unlock(1560387,1127029)");
+      store = await pilotStore(db, scope);
+      assert.equal((await store.meta()).cursors[config.channelId], c);
+      assert.equal((await store.meta()).cursors[second], undefined);
+      await store.cursor(a, second);
+      await store.cursor("555555555555555500", second);
+      assert.equal((await store.meta()).cursors[second], a, "cursor cannot move backward");
+      await store.ingest(sourceRecord(message(a), config.guildId, config.channelId));
+      const sourceB = liveSource({ ...message(b), channel_id: second }, scope);
+      await store.ingest(sourceB, true);
+      await store.ingest(liveSource({ ...message(c), channel_id: second }, scope), true);
+      assert.equal((await store.next()).replyTo, b);
+      assert.equal(
+        (await store.context(c)).priorMessages.some((s) => s.id === a),
+        false,
+      );
+      assert.equal(
+        await store.isAddressed({ ...sourceB, replyTo: a }, "444444444444444444", async () => ({
+          id: a,
+          channel_id: second,
+          author: { id: "444444444444444444" },
+        })),
+        true,
+      );
+      await store.queueReply(b, "Reply in second channel");
+      const sends = [];
+      const discord = {
+        send: async (channelId, body) => {
+          sends.push({ channelId, body });
+          throw new Error("lost acknowledgement");
+        },
+        after: async (channelId) => {
+          assert.equal(channelId, second);
+          return [
+            {
+              id: "555555555555555599",
+              author: { id: "bot" },
+              message_reference: { message_id: b },
+            },
+          ];
+        },
+      };
+      await assert.rejects(
+        deliver(store, discord, "bot", config.channelId, async () => {}),
+        /lost acknowledgement/,
+      );
+      assert.equal(sends[0].channelId, second);
+      assert.equal(sends[0].body.message_reference.channel_id, second);
+      await db.query("SELECT pg_advisory_unlock(1560387,1127029)");
+      store = await pilotStore(db, scope);
+      assert.equal((await store.meta()).cursors[second], a);
+      await deliver(store, discord, "bot", config.channelId, async () => {});
+      await deliver(store, discord, "bot", config.channelId, async () => {});
+      assert.equal(sends.length, 1, "restart reconciles in original channel without resending");
+      assert.equal(
+        (await store.context("555555555555555598")).priorBotReplies.length,
+        0,
+        "primary context cannot include other-channel bot replies",
+      );
+      await store.queueReply(c, "Do not send outside scope");
+      await db.query(
+        "UPDATE pilot_sources SET source=jsonb_set(source,'{channelId}','\"999999999999999999\"') WHERE id=$1",
+        [c],
+      );
+      await deliver(store, discord, "bot", config.channelId, async () => {});
+      assert.equal(
+        (await db.query("SELECT status FROM pilot_outbox WHERE source_id=$1", [c])).rows[0].status,
+        "held",
+      );
+      assert.equal(sends.length, 1);
+    } finally {
+      await db.query("SELECT pg_advisory_unlock(1560387,1127029)");
+      await db.query("SET search_path TO public");
+      await db.query(`DROP SCHEMA ${schema} CASCADE`);
+      await db.end();
+    }
+  },
+);

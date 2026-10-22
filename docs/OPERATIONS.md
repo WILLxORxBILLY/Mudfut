@@ -18,7 +18,8 @@ installation). `pnpm knowledge report` reports bounded knowledge state.
 
 For a route change, stop the current worker and inspect prepared memory, unsent
 output and any other runtime using the same Discord identity. `pilot-route.mjs`
-provides a guarded plan/switch command with a private backup and receipt. A local
+provides a guarded plan/switch command with a private backup and receipt for
+single-channel installations. It refuses to replace a multi-channel scope. A local
 PostgreSQL lock cannot coordinate a separate remote bot runtime.
 
 Take and validate PostgreSQL backups using your own private credentials and

@@ -96,3 +96,27 @@ Use a separate test channel and your own controlled messages first. Check that
 unaddressed messages do not receive replies, addressed replies cite originals,
 source changes invalidate dependent understanding, and restarts retain memory.
 Ordinary checks never send a Discord message or call a model on your behalf.
+
+To serve several text channels in the same guild, keep `channelId` as the primary
+channel and add `replyChannelIds` containing every live channel, including the
+primary. All channels use the same agent and memory, with independent durable
+polling cursors and replies sent in their source channel. For example:
+
+```json
+{
+  "guildId": "111111111111111111",
+  "channelId": "222222222222222222",
+  "replyChannelIds": ["222222222222222222", "222222222222222223"]
+}
+```
+
+Stop the worker and verify that other runtimes have relinquished these channels
+before expanding the configuration. Existing primary-channel progress is retained;
+new channels start with a quiet recent-message catch-up, without replaying old
+requests or commands. Requests after that initial catch-up are handled normally.
+For a coordinated takeover, record private per-channel boundaries before stopping
+the previous sender, drain it, then seed the new cursors from those boundaries so
+requests arriving during the switch are retained. Reconcile any old sender receipts
+in that interval before resuming; never blindly resend an ambiguous delivery.
+Channel removal and primary/guild replacement require an explicit migration of
+pending work; startup refuses to silently drop persisted reply routes.
