@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta
       name="description"
-      content="A private, read-only explorer of attributed community knowledge and archive coverage."
+      content="Explore people, ideas and the evidence behind them in Mudfüt’s interactive knowledge atlas."
     />
     <title>Mudfüt · Knowledge atlas</title>
     <link rel="stylesheet" href="/style.css" />
@@ -15,22 +15,22 @@
     <a class="skip" href="#workspace">Skip to explorer</a>
     <header>
       <div class="brand">
-        <span class="brand-mark" aria-hidden="true">NW</span>
+        <span class="brand-mark" aria-hidden="true">mü</span>
         <div>
-          <span class="eyebrow">COMMUNITY INTELLIGENCE</span>
+          <span class="eyebrow">MUDFÜT / COMMUNITY MEMORY</span>
           <h1>Knowledge atlas</h1>
         </div>
       </div>
       <div class="sync">
         <span id="mode">Read-only local view</span
-        ><button id="refresh" type="button">Refresh from PostgreSQL ↻</button>
+        ><button id="refresh" type="button">Refresh snapshot ↻</button>
       </div>
     </header>
     <div class="intro">
       <div>
-        <p class="eyebrow">MUDFÜT / LIVING RECORD</p>
-        <h2>Explore the conversation.<br /><span>Keep the evidence in view.</span></h2>
-        <p>
+        <p class="eyebrow" id="community-name">MUDFÜT / LIVING RECORD</p>
+        <h2>Understanding changes.<br /><span>The evidence stays.</span></h2>
+        <p id="community-description">
           People, topics and interpretations, connected to their original messages. Every connection
           is inspectable.
         </p>
@@ -44,6 +44,17 @@
         <small id="snapshot-time">Waiting for snapshot…</small>
       </div>
     </div>
+    <section id="demo-guide" class="demo-guide" aria-label="Guided fictional examples" hidden>
+      <div class="guide-heading">
+        <p class="eyebrow">TAKE A CLOSER LOOK</p>
+        <span>Four ways to explore what a community remembers.</span>
+      </div>
+      <div id="stories" class="stories"></div>
+      <div class="story-context" aria-live="polite">
+        <strong id="story-title"></strong>
+        <p id="story-description"></p>
+      </div>
+    </section>
     <nav aria-label="Workspace views">
       <button id="explore-tab" aria-current="page" type="button">01 &nbsp; Explore knowledge</button
       ><button id="coverage-tab" type="button">02 &nbsp; History & coverage</button>
@@ -63,47 +74,60 @@
               <option value="all">All types</option>
               <option value="person">People</option>
               <option value="topic">Topics</option>
-              <option value="candidate">Candidates</option>
+              <option value="candidate">Interpretations</option>
               <option value="claim">Claims</option>
               <option value="message">Original messages</option>
             </select></label
           ><label
             >Status<select id="status">
               <option value="all">All records</option>
-              <option value="candidate">Current candidates</option>
+              <option value="candidate">Current interpretations</option>
               <option value="superseded">Superseded</option>
               <option value="invalidated">Invalidated</option>
               <option value="stale">Stale evidence</option>
               <option value="unavailable">Unavailable evidence</option>
               <option value="unknown">Unknown evidence</option>
             </select></label
-          ><button id="clear-focus" type="button">Clear focus</button>
+          ><button id="clear-focus" type="button">Show whole map</button>
         </form>
         <div class="explorer-grid">
           <div class="map-panel">
-            <div class="panel-head">
+            <div class="panel-head map-heading">
               <div>
                 <span class="eyebrow">CONNECTION MAP</span>
                 <p id="graph-count"></p>
               </div>
-              <label>Zoom<input id="zoom" type="range" min="70" max="180" value="100" /></label>
+              <div class="map-tools">
+                <label>Zoom<input id="zoom" type="range" min="70" max="220" value="100" /></label
+                ><button id="fit" type="button">Fit map</button>
+              </div>
             </div>
             <div class="legend">
-              <span class="person">● People</span><span class="topic">● Topics</span
-              ><span class="candidate">● Candidates</span><span class="claim">● Claims</span
+              <span class="person">● People</span><span class="topic">▰ Topics</span
+              ><span class="candidate">▢ Interpretations</span><span class="claim">◇ Claims</span
               ><span class="message">● Messages</span>
             </div>
             <div class="graph-scroll">
               <svg
                 id="graph"
-                role="img"
-                aria-label="Knowledge connection map. Use the record buttons below for keyboard access."
+                role="group"
+                aria-label="Knowledge connection map. Select nodes with Enter or Space, or use the record list below."
               ></svg>
             </div>
-            <div class="map-caption">
-              Solid lines show recorded relationships. Claim support and contradiction are
-              attributed interpretations. No inferred social ties.
+            <div id="map-empty" class="map-empty" hidden>
+              <h3>No matching records</h3>
+              <p>Try another word, or show the whole map to start again.</p>
+              <button id="empty-reset" type="button">Show whole map</button>
             </div>
+            <div class="map-caption">
+              <span>Drag the map to pan · select any record to follow its evidence.</span
+              ><span
+                >Solid: recorded link &nbsp; · &nbsp; Dashed: context, competition or revision</span
+              >
+            </div>
+            <button id="read-evidence" class="inspector-jump" aria-controls="detail" type="button">
+              Read the selected evidence ↓
+            </button>
             <div class="panel-head">
               <h3>Records in this view</h3>
               <label
@@ -183,7 +207,7 @@
     </main>
     <footer>
       LOCAL / READ ONLY
-      <span
+      <span id="footer-note"
         >PostgreSQL is authoritative. Refresh rebuilds the view; it does not ingest, learn or change
         memory.</span
       >

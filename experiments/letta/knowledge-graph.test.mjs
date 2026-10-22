@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { once } from "node:events";
 import { request } from "node:http";
 import { buildGraph, annotationKey, selectGraph } from "./knowledge-graph/model.mjs";
+import { layoutGraph } from "./knowledge-graph/layout.mjs";
 import { demoRecords, demoSnapshot } from "./knowledge-graph/synthetic.mjs";
 import { readOnly, readPilot, readArchive } from "./knowledge-graph/data.mjs";
 import { graphServer } from "./knowledge-graph/server.mjs";
@@ -196,8 +197,23 @@ test("coverage uses committed history receipts, counts direct candidate sources 
   };
   const pilot = await readPilot(db);
   assert.equal(pilot.stages.reviewed.length, 2);
-  assert.deepEqual(pilot.stages.represented.sort(), ["demo-101", "demo-103", "demo-104"]);
+  assert.deepEqual(pilot.stages.represented.sort(), [
+    "demo-101",
+    "demo-103",
+    "demo-104",
+    "demo-201",
+    "demo-202",
+    "demo-203",
+    "demo-301",
+    "demo-303",
+    "demo-401",
+    "demo-402",
+    "demo-403",
+    "demo-501",
+    "demo-502",
+  ]);
   assert.ok(!pilot.stages.represented.includes("demo-102"));
+  assert.ok(!pilot.stages.represented.includes("demo-302"));
   for (const sql of queries.filter((sql) => sql.includes("unnest(e."))) {
     assert.match(sql, /e.status='done'/);
     assert.match(sql, /w.status='done'/);
@@ -215,7 +231,7 @@ test("coverage uses committed history receipts, counts direct candidate sources 
     },
     pilot.stages,
   );
-  assert.equal(archive.total.stored, 38);
+  assert.equal(archive.total.stored, 231);
   assert.equal(archive.inventory, "unknown");
   assert.match(archive.note, /Stages overlap/);
 });
@@ -234,6 +250,7 @@ test("loopback server serves a usable demo, rejects cross-origin/host writes and
     const response = await fetch(base + "/api/snapshot");
     assert.equal((await response.json()).mode, "FICTIONAL DEMO · not Discord history");
     assert.equal(response.headers.get("cache-control"), "no-store");
+    assert.equal((await fetch(base + "/layout.mjs")).status, 200);
     assert.equal(
       (await fetch(base + "/api/snapshot", { headers: { Origin: "https://untrusted.example" } }))
         .status,
@@ -256,5 +273,97 @@ test("loopback server serves a usable demo, rejects cross-origin/host writes and
     assert.equal(hostStatus, 403);
   } finally {
     await new Promise((resolve) => server.close(resolve));
+  }
+});
+
+test("guided demo destinations preserve corrections, edited sources, competing perspectives and reconciled fictional coverage", () => {
+  const snapshot = demoSnapshot(),
+    { graph, demo, coverage } = snapshot;
+  assert.equal(demo.stories.length, 4);
+  for (const story of demo.stories) {
+    if (story.view === "coverage") continue;
+    assert.ok(graph.nodes.some((node) => node.id === story.nodeId));
+    const view = selectGraph(graph, { focus: story.nodeId, depth: story.depth });
+    assert.ok(view.nodes.length > 1);
+  }
+  assert.equal(graph.nodes.filter((node) => node.type === "person").length, 6);
+  assert.equal(coverage.archive.rows.length, 5);
+  for (const key of [
+    "stored",
+    "usable",
+    "reviewed",
+    "context",
+    "represented",
+    "selected",
+    "deferred",
+    "without_review_receipt",
+  ])
+    assert.equal(
+      coverage.archive.total[key],
+      coverage.archive.rows.reduce((sum, row) => sum + row[key], 0),
+    );
+  assert.equal(coverage.archive.inventory, "unknown");
+  const records = demoRecords();
+  for (const row of records.annotations) {
+    const manifest = records.manifests.find((m) => m.id === row.manifest_id);
+    const episode = manifest.manifest.episodes.find(
+      (e) => `${manifest.id}:${e.key}` === row.episode_id,
+    );
+    assert.ok(episode, `Missing selection for ${row.id}`);
+    assert.ok(row.candidate.sourceIds.every((id) => episode.sourceIds.includes(id)));
+  }
+
+  assert.equal(
+    coverage.stages.represented,
+    new Set(
+      demoRecords()
+        .annotations.filter((row) => row.status === "candidate")
+        .flatMap((row) => row.candidate.sourceIds),
+    ).size,
+  );
+  const disagreement = selectGraph(graph, { focus: demo.stories[2].nodeId, depth: 2 });
+  assert.ok(disagreement.nodes.some((node) => node.id === "candidate:garden-beds@1"));
+  assert.ok(disagreement.edges.some((edge) => edge.relation.startsWith("competes with")));
+});
+
+test("map layout is deterministic and stays finite and bounded for empty, isolated and dense views", () => {
+  assert.equal(layoutGraph([], []).size, 0);
+  const graph = demoSnapshot().graph;
+  for (const nodes of [
+    graph.nodes.slice(0, 1),
+    graph.nodes,
+    Array.from({ length: 100 }, (_, i) => ({ id: `isolated:${i}`, type: "message" })),
+  ]) {
+    const a = layoutGraph(nodes, graph.edges),
+      b = layoutGraph([...nodes].reverse(), graph.edges);
+    assert.deepEqual([...a], [...b]);
+    assert.equal(a.size, nodes.length);
+    for (const point of a.values()) {
+      assert.ok(Number.isFinite(point.x) && Number.isFinite(point.y));
+      assert.ok(point.x >= point.w / 2 && point.x <= 1000 - point.w / 2);
+      assert.ok(point.y >= point.h / 2 && point.y <= 560 - point.h / 2);
+    }
+  }
+});
+
+test("guided neighborhoods keep label boxes apart on desktop and compact screens", () => {
+  const snapshot = demoSnapshot();
+  for (const story of snapshot.demo.stories.filter((item) => item.nodeId)) {
+    const view = selectGraph(snapshot.graph, { focus: story.nodeId, depth: story.depth });
+    for (const [width, height] of [
+      [1000, 560],
+      [360, 660],
+    ]) {
+      const points = [...layoutGraph(view.nodes, view.edges, width, height).values()];
+      for (let a = 0; a < points.length; a++)
+        for (let b = a + 1; b < points.length; b++) {
+          const p = points[a],
+            q = points[b];
+          assert.ok(
+            Math.abs(p.x - q.x) >= (p.w + q.w) / 2 || Math.abs(p.y - q.y) >= (p.h + q.h) / 2,
+            `Label overlap in ${story.id} at ${width}px`,
+          );
+        }
+    }
   }
 });

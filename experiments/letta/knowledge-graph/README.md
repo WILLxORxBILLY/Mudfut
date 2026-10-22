@@ -13,9 +13,28 @@ pnpm letta:graph --demo
 ```
 
 Open <http://127.0.0.1:4317>. The demo is entirely fictional, including its coverage
-numbers, names and IDs. It demonstrates a narrowed interpretation, preserved
-predecessor, accepted correction, qualifying evidence, context-only reply, an
-outside-selection parent, competing interpretation and edited source.
+numbers, names and IDs. Meet **Juniper Commons**: six fictional neighbors planning
+an observatory trip, rooftop garden, little library and repair café.
+
+Four guided examples open a useful neighborhood and its evidence inspector:
+
+1. **A preference, corrected** — compare Mira's original broad label with its
+   narrowed revision; the old understanding and accepted correction remain visible.
+2. **When the source changes** — compare Rowan's bound morning-train message
+   with its edited afternoon-train version; the interpretation stays marked stale.
+3. **One garden, two priorities** — inspect Sana's and Jules's competing spending
+   proposals with each perspective attributed to its speaker.
+4. **How much is understood?** — filter five fictional channels across three months;
+   stored, reviewed and represented counts overlap and never imply full coverage.
+
+Use **Show whole map** to explore freely. Search across source text and annotations,
+filter types/statuses, or select a person/topic to follow recorded connections.
+Dragging empty map space pans; the zoom slider and **Fit map** work without gestures.
+Use Tab then Enter/Space on map nodes, or the record list, to inspect them. Compact
+screens also offer **Read the selected evidence** to jump directly to the inspector.
+The shape/color legend distinguishes people, messages, claims, interpretations and
+topics. Dashed edges mark context, competition and revision links; every edge has
+its recorded relation in the inspector. Layout proximity has no independent meaning.
 
 To inspect an existing installation, set the configuration directory outside the
 repository instead:

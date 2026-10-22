@@ -23,10 +23,14 @@ pnpm install --frozen-lockfile
 pnpm graph --demo
 ```
 
-Open <http://127.0.0.1:4317>. Search and filter records, focus their connections,
-and inspect quotations, source revisions, competing interpretations and corrections.
+Open <http://127.0.0.1:4317> and meet **Juniper Commons**, a fictional community
+with six neighbors and five channels. Four guided stories let you follow a
+correction, compare an edited source, explore competing perspectives and inspect
+coverage. You can also search, pan, zoom and follow connections freely.
 The coverage dashboard keeps archive, review, context and represented-source
 counts separate. Every record and count in demo mode is fictional.
+
+![Juniper Commons: guided examples, an interactive evidence map and a correction inspector](docs/knowledge-graph-demo.png)
 
 ## Run your own bot
 

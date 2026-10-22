@@ -42,6 +42,7 @@ export function graphServer(load) {
         "/": ["index.html", "text/html"],
         "/app.mjs": ["app.mjs", "text/javascript"],
         "/model.mjs": ["model.mjs", "text/javascript"],
+        "/layout.mjs": ["layout.mjs", "text/javascript"],
         "/style.css": ["style.css", "text/css"],
       };
       const asset = Object.hasOwn(assets, request.url) ? assets[request.url] : null;
