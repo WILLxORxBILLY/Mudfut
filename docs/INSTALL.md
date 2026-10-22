@@ -120,3 +120,10 @@ requests arriving during the switch are retained. Reconcile any old sender recei
 in that interval before resuming; never blindly resend an ambiguous delivery.
 Channel removal and primary/guild replacement require an explicit migration of
 pending work; startup refuses to silently drop persisted reply routes.
+
+Reply routes also accept guild announcement channels and forums. A forum route
+follows its active public discussion threads, with independent thread cursors;
+new discussions discovered after activation include their first post. Reopened
+discussions resume their saved cursor. Activity created and archived entirely
+while the worker is offline remains archive material and is not automatically
+replayed as live replies. The configured forum itself is not a message endpoint.

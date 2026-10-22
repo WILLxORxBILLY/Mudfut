@@ -3,7 +3,7 @@ import { readFile, lstat, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { state, assertPrivateState, safeError, saveJson } from "./runtime.mjs";
-import { pilotStore, validateScope, deliver, replyChannels } from "./pilot-store.mjs";
+import { pilotStore, validateScope, deliver } from "./pilot-store.mjs";
 import { discordTransport, refreshSources, archiveTool, startTyping } from "./pilot-discord.mjs";
 import { decodeUnderstanding } from "./pilot-memory.mjs";
 import { postgresUnderstanding } from "./pilot-memory-postgres.mjs";
@@ -12,7 +12,7 @@ import { retryableFailure, boundedCleanup } from "./pilot-supervisor.mjs";
 import { pilotModel, record } from "./pilot-model.mjs";
 import { durableCandidate, isCorrectionRequest } from "./pilot-reply.mjs";
 import { answerKnowledgeCommand } from "./pilot-knowledge-command.mjs";
-import { pollLiveChannels, liveSource } from "./pilot-live-channels.mjs";
+import { pollLiveChannels, liveSource, liveChannelPlan } from "./pilot-live-channels.mjs";
 import { timingTrace } from "./pilot-timing.mjs";
 import { currentHistoryEpisode, historyQueue } from "./pilot-history.mjs";
 import { operatorRequests } from "./pilot-requests.mjs";
@@ -117,11 +117,8 @@ try {
       await record({ type: "reply_classification_upgrade", sourceIds: store.reclassified });
     const discord = discordTransport((await privateFile("discord-token")).trim(), record);
     const bot = await discord.me();
-    for (const channelId of replyChannels(config)) {
-      const channel = await discord.channel(channelId);
-      if (channel.guild_id !== config.guildId || channel.type !== 0)
-        throw new Error("Pilot channels must be configured guild text channels");
-    }
+    const channelPlan = await liveChannelPlan(discord, config);
+    let liveConfig = config;
     let historyCredentials;
     try {
       historyCredentials = JSON.parse(await privateFile("history-postgres.json"));
@@ -177,7 +174,10 @@ try {
     const requests = await operatorRequests(store, state, record);
     const bufferedIncoming = new Map();
     const pollFresh = async () => {
-      const messages = await pollLiveChannels(store, discord, config);
+      const discovered = await channelPlan.discover();
+      await store.registerThreads(discovered.threads, channelPlan.forumIds);
+      liveConfig = { ...config, liveChannelIds: discovered.channelIds };
+      const messages = await pollLiveChannels(store, discord, config, discovered.channelIds);
       await pulse("live_poll_complete");
       return messages;
     };
@@ -186,7 +186,7 @@ try {
         if (
           !message.author.bot &&
           [0, 19].includes(message.type) &&
-          (await store.isAddressed(liveSource(message, config), bot.id, discord.get))
+          (await store.isAddressed(liveSource(message, liveConfig), bot.id, discord.get))
         )
           return true;
       return false;
@@ -318,8 +318,8 @@ try {
         preempted = false;
       try {
         phase = "poll";
-        const meta = await store.meta();
         incoming = await timing.measure("poll", pollFresh);
+        const meta = await store.meta();
         incoming = [
           ...new Map(
             [...bufferedIncoming.values(), ...incoming].map((message) => [message.id, message]),
@@ -337,7 +337,7 @@ try {
           .map((message) => ({ sourceId: message.id, createdAt: message.timestamp }));
         for (const message of incoming) {
           if (!message.author.bot && [0, 19].includes(message.type)) {
-            const source = liveSource(message, config);
+            const source = liveSource(message, liveConfig);
             // Initial catch-up is quiet; later mentions/replies use durable outbox uniqueness.
             const knowledgeCommand = source.content.trimStart().startsWith("!knowledge");
             const addressed =
@@ -362,7 +362,7 @@ try {
           }
           await store.cursor(message.id, message.channel_id);
         }
-        for (const channelId of replyChannels(config)) {
+        for (const channelId of liveConfig.liveChannelIds) {
           if (!meta.cursors[channelId] && !incoming.some((m) => m.channel_id === channelId))
             // Zero is a lower bound, avoiding a local-clock cutoff that could skip messages.
             await store.cursor("00000000000000000", channelId);

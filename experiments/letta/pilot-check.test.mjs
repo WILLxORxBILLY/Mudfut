@@ -18,7 +18,7 @@ import {
   currentSources,
 } from "./pilot-discord.mjs";
 import { retryableFailure } from "./pilot-supervisor.mjs";
-import { pollLiveChannels, liveSource } from "./pilot-live-channels.mjs";
+import { pollLiveChannels, liveSource, liveChannelPlan } from "./pilot-live-channels.mjs";
 import { timingTrace } from "./pilot-timing.mjs";
 import { digest } from "./pilot-store.mjs";
 import {
@@ -757,7 +757,9 @@ test(
     await db.query(`CREATE SCHEMA ${schema}`);
     await db.query(`SET search_path TO ${schema}`);
     const second = "222222222222222223";
-    const scope = { ...config, replyChannelIds: [config.channelId, second] };
+    const forum = "222222222222222224",
+      thread = "222222222222222225";
+    const scope = { ...config, replyChannelIds: [config.channelId, second, forum] };
     try {
       let store = await pilotStore(db, config);
       await store.cursor(c);
@@ -765,6 +767,24 @@ test(
       store = await pilotStore(db, scope);
       assert.equal((await store.meta()).cursors[config.channelId], c);
       assert.equal((await store.meta()).cursors[second], undefined);
+      const olderThread = "222222222222222226";
+      await store.registerThreads(
+        [{ id: olderThread, parent_id: forum, guild_id: config.guildId, type: 11 }],
+        [forum],
+      );
+      assert.equal(
+        (await store.meta()).cursors[olderThread],
+        undefined,
+        "existing discussions start with quiet catch-up",
+      );
+      await store.registerThreads(
+        [{ id: thread, parent_id: forum, guild_id: config.guildId, type: 11 }],
+        [forum],
+      );
+      assert.equal((await store.meta()).cursors[thread], "00000000000000000");
+      await store.cursor(a, thread);
+      assert.equal(await store.replyChannelAllowed(thread), true);
+      assert.equal(await store.replyChannelAllowed("999999999999999999"), false);
       await store.cursor(a, second);
       await store.cursor("555555555555555500", second);
       assert.equal((await store.meta()).cursors[second], a, "cursor cannot move backward");
@@ -831,6 +851,31 @@ test(
         "held",
       );
       assert.equal(sends.length, 1);
+      const threadSource = { ...sourceB, id: "555555555555555600", channelId: thread };
+      await store.ingest(threadSource, true);
+      assert.equal((await store.next()).replyTo, threadSource.id);
+      await store.queueReply(threadSource.id, "Thread reply");
+      await deliver(
+        store,
+        {
+          send: async (channelId, body) => {
+            assert.equal(channelId, thread);
+            assert.equal(body.message_reference.channel_id, thread);
+            return { id: "555555555555555601" };
+          },
+        },
+        "bot",
+        config.channelId,
+        async () => {},
+      );
+      await db.query("SELECT pg_advisory_unlock(1560387,1127029)");
+      store = await pilotStore(db, scope);
+      assert.equal(
+        (await db.query("SELECT learnable FROM pilot_sources WHERE id=$1", [threadSource.id]))
+          .rows[0].learnable,
+        true,
+        "thread evidence survives restart",
+      );
     } finally {
       await db.query("SELECT pg_advisory_unlock(1560387,1127029)");
       await db.query("SET search_path TO public");
@@ -839,3 +884,32 @@ test(
     }
   },
 );
+
+test("forum discovery admits only current threads under configured parents", async () => {
+  const forum = "222222222222222224",
+    thread = "222222222222222225";
+  const scope = { ...config, replyChannelIds: [config.channelId, forum] };
+  let active = [{ id: thread, guild_id: config.guildId, parent_id: forum, type: 11 }];
+  const discord = {
+    channel: async (id) => ({ id, guild_id: config.guildId, type: id === forum ? 15 : 0 }),
+    activeThreads: async () => ({ threads: active }),
+  };
+  const plan = await liveChannelPlan(discord, scope);
+  assert.deepEqual((await plan.discover()).channelIds, [config.channelId, thread]);
+  active.push({
+    id: "222222222222222226",
+    guild_id: config.guildId,
+    parent_id: "222222222222222299",
+    type: 11,
+  });
+  assert.deepEqual((await plan.discover()).channelIds, [config.channelId, thread]);
+  active[0].guild_id = "111111111111111119";
+  await assert.rejects(plan.discover(), /identity mismatch/);
+  await assert.rejects(
+    liveChannelPlan(
+      { ...discord, channel: async (id) => ({ id, guild_id: config.guildId, type: 4 }) },
+      scope,
+    ),
+    /Live routes/,
+  );
+});

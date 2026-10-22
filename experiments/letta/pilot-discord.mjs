@@ -90,6 +90,7 @@ export function discordTransport(token, record) {
   }
   return {
     me: () => read(Routes.user()),
+    activeThreads: (guildId) => read(Routes.guildActiveThreads(guildId)),
     channel: (id) => read(Routes.channel(id)),
     recent: (id, limit = 20) =>
       read(Routes.channelMessages(id), { query: new URLSearchParams({ limit: String(limit) }) }),
