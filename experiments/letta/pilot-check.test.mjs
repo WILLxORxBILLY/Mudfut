@@ -13,9 +13,11 @@ import {
   refreshSources,
   archiveTool,
   retryRead,
+  discordRead,
   startTyping,
   currentSources,
 } from "./pilot-discord.mjs";
+import { retryableFailure } from "./pilot-supervisor.mjs";
 import { timingTrace } from "./pilot-timing.mjs";
 import { digest } from "./pilot-store.mjs";
 import {
@@ -669,4 +671,35 @@ test("typing starts immediately, refreshes without overlap, and stops after succ
   tick();
   assert.equal(cleared, true);
   assert.equal(calls, 2);
+});
+
+test("Discord GET timeouts retry within bounds and remain recoverable after exhaustion", async () => {
+  let attempts = 0;
+  const aborted = new DOMException("This operation was aborted", "AbortError");
+  await assert.rejects(
+    retryRead(
+      () =>
+        discordRead(async () => {
+          attempts++;
+          throw aborted;
+        }),
+      async () => {},
+      async () => {},
+    ),
+    (error) => {
+      assert.equal(error.code, "ETIMEDOUT");
+      assert.equal(error.cause, aborted);
+      assert.equal(retryableFailure(error), true);
+      return true;
+    },
+  );
+  assert.equal(attempts, 3);
+  const forbidden = Object.assign(new Error("Forbidden"), { status: 403 });
+  await assert.rejects(
+    discordRead(async () => {
+      throw forbidden;
+    }),
+    (error) => error === forbidden,
+  );
+  assert.equal(retryableFailure(forbidden), false);
 });

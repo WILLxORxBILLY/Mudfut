@@ -54,11 +54,25 @@ export function startTyping(discord, channelId, record, timers = globalThis) {
   };
 }
 
+// REST uses AbortError for its own request timeout. These GETs have no caller
+// cancellation signal; keep retries bounded and leave ambiguous POSTs untouched.
+export async function discordRead(read) {
+  try {
+    return await read();
+  } catch (error) {
+    if (error?.name !== "AbortError") throw error;
+    const timeout = new Error("Discord read timed out", { cause: error });
+    timeout.code = "ETIMEDOUT";
+    throw timeout;
+  }
+}
+
 export function discordTransport(token, record) {
   // Disable the REST library's automatic 5xx retry: a POST may have succeeded.
   // Its rate-limit scheduling remains enabled. Durable outbox owns send recovery.
   const rest = new REST({ version: "10", retries: 0, timeout: 30000 }).setToken(token);
-  const read = (route, options) => retryRead(() => rest.get(route, options), record);
+  const read = (route, options) =>
+    retryRead(() => discordRead(() => rest.get(route, options)), record);
   async function after(channelId, afterId) {
     const result = [];
     let before;
