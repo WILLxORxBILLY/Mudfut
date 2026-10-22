@@ -1,7 +1,7 @@
 # Contributor instructions
 
-Keep the runtime and graph small, source-backed and portable. PostgreSQL owns
-messages, work, memory revisions and annotations; the graph is a derived read view.
+Keep the runtime small, source-backed and portable. PostgreSQL owns messages,
+work, memory revisions and annotations.
 Never treat model output or correction notes as independent original evidence.
 Preserve exact quotations, attribution, source changes, correction lineage and
 ambiguous-delivery holds. Keep live replies ahead of historical generation and

@@ -14,8 +14,7 @@ one installation per macOS user. Do not run install/start/stop/resume against an
 existing installation merely to test the source checkout.
 
 `pnpm bot:status` reads the existing pilot tables (it does not initialize a new
-installation). `pnpm knowledge report` reports bounded knowledge state. The
-standalone graph never acquires the worker lock or initializes schema.
+installation). `pnpm knowledge report` reports bounded knowledge state.
 
 For a route change, stop the current worker and inspect prepared memory, unsent
 output and any other runtime using the same Discord identity. `pilot-route.mjs`
@@ -34,6 +33,5 @@ Retain these protections until a verified upstream upgrade replaces them.
 
 The pinned upstream CLI currently reports React peer-version warnings for its
 terminal UI dependencies. This release uses its headless local SDK path and does
-not claim support for embedding that terminal UI or Electron. Installed-package,
-headless fixture and graph checks pass; those warnings are not presented as a
-clean peer-dependency audit.
+not claim support for embedding that terminal UI or Electron. The headless fixture
+checks pass; those warnings are not presented as a clean peer-dependency audit.

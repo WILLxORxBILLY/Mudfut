@@ -136,7 +136,6 @@ try {
       "search-gaps.test.mjs",
       "learning-metrics.test.mjs",
       "community-knowledge.test.mjs",
-      "knowledge-graph.test.mjs",
       "community-knowledge-manifest.test.mjs",
       "community-knowledge-review.test.mjs",
       "community-knowledge-review-package.test.mjs",

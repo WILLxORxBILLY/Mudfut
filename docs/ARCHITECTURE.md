@@ -1,6 +1,6 @@
 # Architecture
 
-The first public release contains the current Letta bot and knowledge atlas.
+The public release contains the current Letta bot.
 The `experiments/letta` directory name is retained to avoid rewriting relative
 imports and established checks; it does not point to another checkout or server.
 All application modules and synthetic tests are in this tree.
@@ -22,13 +22,6 @@ claim anchors, corrections and derived person/topic/history views. Candidate
 prose is not original evidence. Source edits, deletions and interpretation
 changes invalidate their dependent current views and work.
 
-The `knowledge-graph` directory reads those records through bounded read-only
-transactions and renders a disposable browser snapshot. It preserves revision
-identity, direct/context roles, quotations and recorded claim relationships.
-Coverage reconciles committed review receipts with stored archive IDs; it does
-not infer that an archive is a complete inventory of Discord.
-
 Private configuration and runtime state live outside the checkout. The archive
-is optional and has a separate reader role. The public demo and ordinary checks
-use fictional data; production deployments, credentials and real evidence are
-not release inputs. There are no migrations from a maintainer's private server.
+is optional and has a separate reader role. Ordinary checks use fictional data;
+production deployments, credentials and real evidence are not release inputs. There are no migrations from a maintainer's private server.
