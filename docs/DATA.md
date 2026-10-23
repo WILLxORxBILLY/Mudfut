@@ -6,7 +6,7 @@ Keep state outside the checkout and restrict its directory to mode 0700 and
 configuration/token files to mode 0600. Logs, memory and evaluation packets can
 contain conversation text and belong in that private state boundary.
 
-The bot observes the configured live text channel and learns without replying
+The bot observes configured live channels and active forum discussions and learns without replying
 unless addressed. This build does not implement a working per-member opt-out
 command. The operator chooses an appropriate server/channel and explains that
 policy before enabling the bot. Original source edits/deletions, attribution,

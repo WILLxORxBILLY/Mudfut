@@ -1,7 +1,7 @@
 # Mudfüt
 
 A self-hosted Discord community bot with source-backed memory. It learns from a
-configured channel, replies when addressed, and keeps dated, revisable
+configured channels, replies when addressed, and keeps dated, revisable
 understanding grounded in original messages.
 
 This is an early release of the current Letta runtime. It contains no community
@@ -59,14 +59,16 @@ proof; it uses your account and retains its results outside the repository.
 
 ## Limits
 
-The bot currently replies in one configured guild text channel per installation.
+An installation uses one shared agent and memory across its configured reply
+channels in one guild. Routes can include text and announcement channels and
+active public discussions under a forum; see [route setup](docs/INSTALL.md#before-inviting-real-conversation).
 Historical review is bounded, and archive availability does not prove complete
 Discord coverage. An optional existing archive can be
 connected using [the archive contract](docs/ARCHIVE.md); a full-server archive
 crawler is not included in this first release. Attachments are not interpreted.
 
-This build observes the configured channel and has no working per-member opt-out
-command. Choose an appropriate channel and explain your installation's data use
+This build observes the configured reply destinations and has no working per-member opt-out
+command. Choose appropriate channels and explain your installation's data use
 to its members. See [data handling](docs/DATA.md) for what is retained and sent to
 the model. The project is beta software; test a separate installation before
 using it with a community.
