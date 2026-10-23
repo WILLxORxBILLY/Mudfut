@@ -12,12 +12,17 @@ function deferred() {
 }
 const tick = () => new Promise((accept) => setImmediate(accept));
 function fakeTimers() {
-  let id = 0;
+  let id = 0,
+    at = 0;
   const callbacks = new Map();
   return {
     callbacks,
-    setTimeout: (callback) => {
-      callbacks.set(++id, callback);
+    now: () => at,
+    setTimeout: (callback, milliseconds) => {
+      callbacks.set(++id, () => {
+        at += milliseconds;
+        callback();
+      });
       return id;
     },
     clearTimeout: (key) => callbacks.delete(key),
@@ -57,6 +62,7 @@ test("urgent live input aborts history and waits for action cleanup before handi
       },
       record: async (event) => events.push(event),
       timers,
+      now: timers.now,
     },
   );
   result.then(
@@ -114,6 +120,7 @@ test("nonurgent polling is serial, drains a pending fetch and stops every timer"
         aborts++;
       },
       timers,
+      now: timers.now,
     },
   );
   result.then(() => {
@@ -153,6 +160,7 @@ test("poll failure stops history and preserves the original failure cause", asyn
       isUrgent: () => false,
       abort: async () => cancelled.resolve(),
       timers,
+      now: timers.now,
     },
   );
   await assert.rejects(
@@ -174,6 +182,7 @@ test("late urgent messages invalidate a finished historical result before it can
       aborts++;
     },
     timers,
+    now: timers.now,
   });
   await tick();
   fetch.resolve(incoming);
@@ -419,4 +428,142 @@ test("progress health advances on successful work, throttles to five seconds, co
   );
   assert.equal(saved.at(-1).at, new Date(5000).toISOString());
   assert.throws(() => progressPulse(async () => {}, { minIntervalMs: 4999 }), /five seconds/);
+});
+
+test("source checkpoint polls reuse success only within cadence, force fresh reads and handle clock rollback", async () => {
+  let at = 0,
+    calls = 0;
+  const checkpoint = livePriorityCheckpoint({
+    poll: async () => {
+      calls++;
+      return [];
+    },
+    isUrgent: () => false,
+    now: () => at,
+  });
+  await Promise.all([checkpoint(), checkpoint()]);
+  at = 1499;
+  await checkpoint();
+  assert.equal(calls, 1);
+  at = 1500;
+  await checkpoint();
+  assert.equal(calls, 2);
+  at = 1490;
+  await checkpoint();
+  assert.equal(calls, 3);
+  await checkpoint({ fresh: true });
+  assert.equal(calls, 4);
+});
+
+test("a failed refresh cannot reuse earlier successful checkpoint data", async () => {
+  let calls = 0;
+  const failure = new Error("Discord unavailable");
+  const checkpoint = livePriorityCheckpoint({
+    poll: async () => {
+      if (++calls === 2) throw failure;
+      return [];
+    },
+    isUrgent: () => false,
+    now: () => 0,
+  });
+  await checkpoint();
+  await assert.rejects(checkpoint({ fresh: true }), (e) => e === failure);
+  await checkpoint();
+  assert.equal(calls, 3);
+});
+
+test("many source checkpoints share a cadence, with a forced fresh poll before acceptance", async () => {
+  let polls = 0,
+    sourceReads = 0;
+  const timers = fakeTimers();
+  const result = await withLivePriority(
+    async (check) => {
+      for (let i = 0; i < 40; i++) {
+        await check();
+        sourceReads++;
+      }
+      return "ready";
+    },
+    {
+      poll: async () => {
+        polls++;
+        return [];
+      },
+      isUrgent: () => false,
+      abort: async () => {},
+      timers,
+      now: timers.now,
+    },
+  );
+  assert.equal(result, "ready");
+  assert.equal(sourceReads, 40);
+  assert.equal(polls, 2);
+  assert.equal(timers.callbacks.size, 0);
+});
+
+test("a live arrival hidden by checkpoint reuse is caught by the final fresh acceptance poll", async () => {
+  let polls = 0,
+    aborts = 0;
+  const timers = fakeTimers();
+  await assert.rejects(
+    withLivePriority(
+      async (check) => {
+        await check();
+        await check();
+        return "finished";
+      },
+      {
+        poll: async () => (++polls === 1 ? [] : incoming),
+        isUrgent: (messages) => messages.length > 0,
+        abort: async () => {
+          aborts++;
+        },
+        timers,
+        now: timers.now,
+      },
+    ),
+    (e) => e instanceof HistoryPreempted && e.messages === incoming,
+  );
+  assert.equal(polls, 2);
+  assert.equal(aborts, 1);
+  assert.equal(timers.callbacks.size, 0);
+});
+
+test("a failed final fresh poll rejects a completed action with its cause", async () => {
+  let polls = 0;
+  const original = new Error("Final source unavailable"),
+    timers = fakeTimers();
+  await assert.rejects(
+    withLivePriority(
+      async (check) => {
+        await check();
+        return "finished";
+      },
+      {
+        poll: async () => {
+          if (++polls === 2) throw original;
+          return [];
+        },
+        isUrgent: () => false,
+        abort: async () => {},
+        timers,
+        now: timers.now,
+      },
+    ),
+    (e) => e.code === "LIVE_PRIORITY_POLL_FAILED" && e.cause === original,
+  );
+  assert.equal(polls, 2);
+  assert.equal(timers.callbacks.size, 0);
+});
+
+test("source preemption is never cached after the caller handles an urgent message", async () => {
+  let polls = 0;
+  const checkpoint = livePriorityCheckpoint({
+    poll: async () => (++polls === 1 ? incoming : []),
+    isUrgent: (messages) => messages.length > 0,
+    now: () => 0,
+  });
+  await assert.rejects(checkpoint(), (e) => e instanceof HistoryPreempted);
+  assert.deepEqual(await checkpoint(), []);
+  assert.equal(polls, 2);
 });
