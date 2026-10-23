@@ -7,20 +7,50 @@ export class HistoryPreempted extends Error {
   }
 }
 
-// Source-loading loops can use this between network calls without creating a second writer.
-export function livePriorityCheckpoint({ poll, isUrgent }) {
-  let inFlight;
-  return async () => {
-    if (!inFlight)
-      inFlight = Promise.resolve()
-        .then(poll)
-        .finally(() => {
-          inFlight = null;
-        });
-    const messages = await inFlight;
-    if (await isUrgent(messages)) throw new HistoryPreempted(messages);
-    return messages;
+// ponytail: checkpoint polls reuse success for at most intervalMs; a gateway
+// arrival feed is the upgrade if polling cadence cannot meet live priority needs.
+function boundedLivePoll(poll, intervalMs, now) {
+  if (
+    typeof poll !== "function" ||
+    typeof now !== "function" ||
+    !Number.isInteger(intervalMs) ||
+    intervalMs < 1
+  )
+    throw new Error("Live polling needs a poll, clock and positive interval");
+  let inFlight,
+    messages,
+    completedAt = -Infinity;
+  return async ({ fresh = false } = {}) => {
+    if (inFlight) return inFlight;
+    const age = now() - completedAt;
+    if (!fresh && age >= 0 && age < intervalMs) return messages;
+    // A failed forced refresh must not make an earlier successful result reusable.
+    completedAt = -Infinity;
+    inFlight = Promise.resolve()
+      .then(poll)
+      .then((result) => {
+        messages = result;
+        completedAt = now();
+        return result;
+      })
+      .finally(() => {
+        inFlight = null;
+      });
+    return inFlight;
   };
+}
+
+// Source-loading loops can use this between network calls without creating a second writer.
+export function livePriorityCheckpoint({ poll, isUrgent, intervalMs = 1500, now = Date.now }) {
+  return boundedLivePoll(
+    async () => {
+      const messages = await poll();
+      if (await isUrgent(messages)) throw new HistoryPreempted(messages);
+      return messages;
+    },
+    intervalMs,
+    now,
+  );
 }
 
 export async function withLivePriority(
@@ -31,6 +61,7 @@ export async function withLivePriority(
     abort,
     record = async () => {},
     intervalMs = 1500,
+    now = Date.now,
     timers = { setTimeout, clearTimeout },
   },
 ) {
@@ -45,6 +76,7 @@ export async function withLivePriority(
     throw new Error(
       "Live priority requires an action, poll, urgency check, abort and positive interval",
     );
+  const read = boundedLivePoll(poll, intervalMs, now);
   let stopped = false,
     timer,
     inFlight,
@@ -67,12 +99,12 @@ export async function withLivePriority(
       error.abortError = abortError;
     }
   }
-  async function check() {
+  async function check(options) {
     if (failure) throw failure;
     if (!inFlight) {
       inFlight = (async () => {
         try {
-          const messages = await poll();
+          const messages = await read(options);
           if (await isUrgent(messages)) await interrupt(new HistoryPreempted(messages));
           return messages;
         } catch (cause) {
@@ -114,6 +146,8 @@ export async function withLivePriority(
     if (timer != null) timers.clearTimeout(timer);
     // A live arrival already being fetched must be considered before accepting historical output.
     await inFlight?.catch(() => {});
+    // Acceptance always observes a poll started after the action and prior poll drain.
+    if (!actionError && !failure) await check({ fresh: true }).catch(() => {});
   }
   if (failure) {
     if (actionError && actionError !== failure) failure.actionError = actionError;
