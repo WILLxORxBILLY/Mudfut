@@ -1,6 +1,71 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { toolLifecycle } from "./pilot-tool-lifecycle.mjs";
+import { toolLifecycle, inlineApplicationTools } from "./pilot-tool-lifecycle.mjs";
+
+test("application tools wait inline in only their exact conversation before the model starts", async () => {
+  const definition = {
+    name: "read_memory",
+    label: "Memory",
+    description: "Read sourced memory",
+    parameters: { type: "object" },
+    execute: async () => ({ content: [] }),
+  };
+  let command;
+  await inlineApplicationTools(
+    {
+      conversationId: "conversation-test",
+      sendCommand: async (value, options) => {
+        command = value;
+        assert.equal(options.responseType, "runtime_external_tools_update_response");
+        return { success: true };
+      },
+    },
+    "agent-test",
+    [definition],
+  );
+  assert.equal(command.type, "runtime_external_tools_update");
+  assert.deepEqual(command.updates[0].runtimes, [
+    { agent_id: "agent-test", conversation_id: "conversation-test" },
+  ]);
+  assert.equal(command.updates.length, 1);
+  assert.deepEqual(command.updates[0].external_tools[0].tools, [
+    {
+      name: definition.name,
+      label: definition.label,
+      description: definition.description,
+      parameters: definition.parameters,
+      auto_background: false,
+    },
+  ]);
+  assert.equal(Object.hasOwn(definition, "auto_background"), false);
+});
+
+test("unconfirmed inline tool registration fails before a turn can proceed", async () => {
+  for (const response of [{ success: false }, {}, undefined]) {
+    await assert.rejects(
+      inlineApplicationTools(
+        { conversationId: "conversation-test", sendCommand: async () => response },
+        "agent-test",
+        [{ name: "read_memory" }],
+      ),
+      /did not confirm/,
+    );
+  }
+  const failure = new Error("transport unavailable");
+  await assert.rejects(
+    inlineApplicationTools(
+      {
+        conversationId: "conversation-test",
+        sendCommand: async () => {
+          throw failure;
+        },
+      },
+      "agent-test",
+      [{ name: "read_memory" }],
+    ),
+    (error) => error === failure,
+  );
+});
 
 const deferred = () => {
   let resolve, reject;

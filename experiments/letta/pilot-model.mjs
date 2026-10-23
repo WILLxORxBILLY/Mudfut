@@ -22,7 +22,7 @@ import {
   replyEvidence,
   recallQuery,
 } from "./pilot-reply.mjs";
-import { toolLifecycle } from "./pilot-tool-lifecycle.mjs";
+import { toolLifecycle, inlineApplicationTools } from "./pilot-tool-lifecycle.mjs";
 import { formatReply, turnCancellation } from "./pilot-reply-format.mjs";
 import { searchGapInvestigator } from "./pilot-search-gaps.mjs";
 import { abortForDeadline } from "./pilot-deadline-abort.mjs";
@@ -678,6 +678,7 @@ export async function pilotModel(
         cancellation.check();
         active = client.createSession(identity.agentId, options(tools));
         await timing.measure("session_ready", () => active.ready());
+        await inlineApplicationTools(active, identity.agentId, tools);
         cancellation.check();
         await record({
           type: "input",
