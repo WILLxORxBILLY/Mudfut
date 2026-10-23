@@ -226,6 +226,7 @@ async function add(db, key, n, overrides = {}) {
   return episodeId;
 }
 const transport = {
+  channel: async (id) => ({ id, guild_id: guildId, type: 0 }),
   recent: async () => [],
   get: async (_channel, sourceId) => message(Number(BigInt(sourceId) - BigInt(id(0)))),
 };

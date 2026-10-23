@@ -133,7 +133,7 @@ export async function currentHistoryEpisode(
         await history.query(
           `SELECT m.message_id FROM messages m
         WHERE m.guild_id=$1 AND m.channel_id=$2 AND m.message_id=ANY($3::text[])
-        AND m.deleted_at IS NULL AND m.content IS NOT NULL AND m.thread_id IS NULL`,
+        AND m.deleted_at IS NULL AND m.content IS NOT NULL AND (m.thread_id IS NULL OR m.thread_id=m.channel_id)`,
           [episode.guildId, episode.channelId, [...episode.sourceIds, ...episode.contextIds]],
         )
       ).rows.map((row) => row.message_id),
@@ -147,6 +147,26 @@ export async function currentHistoryEpisode(
     .filter((id) => eligible.has(id))
     .map((id) => ({ id, channelId: episode.channelId }));
   if (await shouldYield()) return null;
+  // Message REST reads establish the channel ID; channel metadata establishes its guild
+  // and thread parent independently of live reply enrollment, including archived threads.
+  const channel = await discord.channel(episode.channelId);
+  if (
+    channel.id !== episode.channelId ||
+    channel.guild_id !== episode.guildId ||
+    ![0, 5, 10, 11].includes(channel.type)
+  )
+    throw new Error("Historical channel identity mismatch");
+  if ([10, 11].includes(channel.type)) {
+    if (!snowflake(channel.parent_id)) throw new Error("Historical thread parent is missing");
+    if (await shouldYield()) return null;
+    const parent = await discord.channel(channel.parent_id);
+    if (
+      parent.id !== channel.parent_id ||
+      parent.guild_id !== episode.guildId ||
+      !(channel.type === 10 ? [5] : [0, 15]).includes(parent.type)
+    )
+      throw new Error("Historical thread parent identity mismatch");
+  }
   let originals;
   try {
     originals = await currentSources(discord, requested, async () => {
@@ -443,7 +463,7 @@ export async function selectAutomaticHistoryWindow(history, channel, cursor, set
   const candidates = (
     await history.query(
       `SELECT message_id,created_at FROM messages
-       WHERE guild_id=$1 AND channel_id=$2 AND thread_id IS NULL
+       WHERE guild_id=$1 AND channel_id=$2 AND (thread_id IS NULL OR thread_id=channel_id)
          AND deleted_at IS NULL AND content IS NOT NULL
          AND created_at >= $3::timestamptz AND created_at <= COALESCE($4::timestamptz,now())
          AND (created_at,message_id::numeric) > ($5::timestamptz,$6::numeric)
@@ -477,13 +497,13 @@ export async function selectAutomaticHistoryWindow(history, channel, cursor, set
     await history.query(
       `SELECT message_id,created_at FROM (
          (SELECT message_id,created_at FROM messages
-          WHERE guild_id=$1 AND channel_id=$2 AND thread_id IS NULL
+          WHERE guild_id=$1 AND channel_id=$2 AND (thread_id IS NULL OR thread_id=channel_id)
             AND deleted_at IS NULL AND content IS NOT NULL
             AND (created_at,message_id::numeric) < ($3::timestamptz,$4::numeric)
           ORDER BY created_at DESC,message_id::numeric DESC LIMIT 4)
          UNION ALL
          (SELECT message_id,created_at FROM messages
-          WHERE guild_id=$1 AND channel_id=$2 AND thread_id IS NULL
+          WHERE guild_id=$1 AND channel_id=$2 AND (thread_id IS NULL OR thread_id=channel_id)
             AND deleted_at IS NULL AND content IS NOT NULL
             AND (created_at,message_id::numeric) > ($5::timestamptz,$6::numeric)
           ORDER BY created_at,message_id::numeric LIMIT 4)
@@ -579,7 +599,8 @@ function historyAutomation(store, history, directory, record, shouldYield, failu
       const done = new Set(
         (
           await store.db.query(
-            "SELECT DISTINCT unnest(read_ids) AS id FROM pilot_history_episodes WHERE status='done' AND read_ids && $1::text[]",
+            // Committed receipts survive later operator holds and source requeues.
+            "SELECT DISTINCT unnest(read_ids) AS id FROM pilot_history_episodes WHERE read_ids && $1::text[]",
             [selectedIds],
           )
         ).rows.map((row) => row.id),

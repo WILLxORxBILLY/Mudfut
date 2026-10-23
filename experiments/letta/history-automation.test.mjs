@@ -4,6 +4,7 @@ import { mkdtemp, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  currentHistoryEpisode,
   validateHistoryPass,
   validateHistoryAutomation,
   selectAutomaticHistoryWindow,
@@ -190,6 +191,7 @@ test("automatic admission durably queues unread work, deduplicates completed tar
     };
     let fetched = 0;
     const discord = {
+      channel: async (id) => ({ id, guild_id: guildId, type: 0 }),
       recent: async () => [],
       get: async (_channel, id) => {
         fetched++;
@@ -254,6 +256,7 @@ test("a live arrival yields before source refresh without committing a read rece
     const queue = historyQueue(
       { db },
       {
+        channel: async (id) => ({ id, guild_id: guildId, type: 0 }),
         recent: async () => {
           reads++;
           return [];
@@ -277,7 +280,7 @@ test("a live arrival yields before source refresh without committing a read rece
 });
 
 test(
-  "PostgreSQL automation cursor, bounded manifests and read dedup survive worker replacement",
+  "PostgreSQL automation deduplicates committed deferred receipts but retries unreviewed deferred targets",
   { skip: process.env.CHECK_DATABASE !== "1" },
   async () => {
     const { readFile } = await import("node:fs/promises");
@@ -307,12 +310,17 @@ test(
           [guildId, channelId, message.message_id, message.created_at],
         );
       await db.query(
-        "INSERT INTO pilot_history_episodes(id,status,read_ids) VALUES('manual:done','done',$1)",
+        "INSERT INTO pilot_history_episodes(id,status,read_ids) VALUES('manual:committed','deferred',$1)",
         [[original.message_id]],
+      );
+      await db.query(
+        "INSERT INTO pilot_history_episodes(id,status,manifest) VALUES('manual:unreviewed','deferred',$1)",
+        [{ sourceIds: [next.message_id] }],
       );
       await writeFile(join(directory, "history-automation.json"), JSON.stringify(settings));
       const store = { db, ingest: async () => {}, remove: async () => {} };
       const discord = {
+        channel: async (id) => ({ id, guild_id: guildId, type: 0 }),
         recent: async () => [],
         get: async (_channel, id) => ({
           id,
@@ -408,6 +416,7 @@ test("historical context fetch yields between Discord network calls when a live 
         },
       },
       {
+        channel: async (id) => ({ id, guild_id: guildId, type: 0 }),
         recent: async () => {
           recent++;
           urgent = true;
@@ -437,3 +446,152 @@ test("historical context fetch yields between Discord network calls when a live 
     await rm(directory, { recursive: true, force: true });
   }
 });
+
+test(
+  "archived historical threads retain transport identity, mixed tags and fresh metadata",
+  {
+    skip: process.env.CHECK_DATABASE !== "1",
+  },
+  async () => {
+    const { readFile } = await import("node:fs/promises");
+    const { default: pg } = await import("pg");
+    const { state } = await import("./runtime.mjs");
+    const db = new pg.Client(JSON.parse(await readFile(join(state, "postgres.json"), "utf8")));
+    await db.connect();
+    const thread = "777777777777777777",
+      parentId = "888888888888888888";
+    const ids = Array.from({ length: 6 }, (_, i) => String(firstId + BigInt(i)));
+    const episode = {
+      guildId,
+      channelId: thread,
+      sourceIds: ids.slice(1, 4),
+      contextIds: [ids[0], ids[5]],
+    };
+    const channel = {
+      id: thread,
+      guild_id: guildId,
+      type: 11,
+      parent_id: parentId,
+      thread_metadata: { archived: true },
+    };
+    const parent = { id: parentId, guild_id: guildId, type: 15 };
+    const transportReads = [];
+    const discord = {
+      channel: async (id) => (id === thread ? channel : parent),
+      recent: async (id) => {
+        assert.equal(id, thread);
+        return [];
+      },
+      get: async (id, messageId) => {
+        transportReads.push(messageId);
+        assert.equal(id, thread);
+        if (messageId === ids[3]) return null;
+        return {
+          id: messageId,
+          channel_id: id,
+          author: { id: "333333333333333333", username: "Member" },
+          type: 0,
+          content: "Fresh edited source",
+          timestamp: "2025-01-02T00:00:00Z",
+          edited_timestamp: "2025-01-03T00:00:00Z",
+        };
+      },
+    };
+    try {
+      await db.query(`CREATE TEMP TABLE messages(guild_id text,channel_id text,message_id text,
+      created_at timestamptz,deleted_at timestamptz,content text,thread_id text)`);
+      for (let i = 0; i < 6; i++)
+        await db.query("INSERT INTO messages VALUES($1,$2,$3,$4,NULL,'Archive original',$5)", [
+          guildId,
+          i === 4 ? channelId : thread,
+          ids[i],
+          new Date(Date.UTC(2025, 0, 2, 0, i)),
+          i === 0 || i === 5 ? null : i === 2 ? parentId : thread,
+        ]);
+      const selected = await selectAutomaticHistoryWindow(
+        db,
+        { guildId, channelId: thread, start: "2025-01-01T00:00:00Z", end: "2025-02-01T00:00:00Z" },
+        { at: "2025-01-01T00:00:00Z", id: "0" },
+        { maxMessages: 24, windowMinutes: 30 },
+      );
+      assert.deepEqual(
+        selected.targets.map((x) => x.message_id),
+        [ids[0], ids[1], ids[3], ids[5]],
+      );
+      const loaded = await currentHistoryEpisode(discord, db, episode);
+      assert.deepEqual(
+        loaded.rows.map((x) => x.id),
+        [ids[1]],
+      );
+      assert.equal(loaded.rows[0].source.channelId, thread);
+      assert.equal(loaded.rows[0].source.content, "Fresh edited source");
+      assert.equal(loaded.rows[0].source.editedAt, "2025-01-03T00:00:00Z");
+      assert.deepEqual(
+        loaded.context.map((x) => x.id),
+        [ids[0], ids[5]],
+      );
+      assert.deepEqual(loaded.excluded, [
+        { id: ids[2], reason: "ineligible in archive" },
+        { id: ids[3], reason: "deleted" },
+      ]);
+      assert.ok(!transportReads.includes(ids[2]));
+      let urgent = false;
+      const metadataReads = [];
+      assert.equal(
+        await currentHistoryEpisode(
+          {
+            ...discord,
+            channel: async (id) => {
+              metadataReads.push(id);
+              urgent = true;
+              return channel;
+            },
+          },
+          db,
+          episode,
+          async () => urgent,
+        ),
+        null,
+      );
+      assert.deepEqual(metadataReads, [thread]);
+      // No live registration/store/sender exists in this path.
+      for (const [badChannel, badParent] of [
+        [{ ...channel, id: parentId }, parent],
+        [{ ...channel, guild_id: parentId }, parent],
+        [{ ...channel, type: 12 }, parent],
+        [{ ...channel, parent_id: null }, parent],
+        [channel, { ...parent, guild_id: parentId }],
+        [channel, { ...parent, id: thread }],
+        [channel, { ...parent, type: 2 }],
+      ])
+        await assert.rejects(
+          currentHistoryEpisode(
+            { ...discord, channel: async (id) => (id === thread ? badChannel : badParent) },
+            db,
+            episode,
+          ),
+          /Historical/,
+        );
+      await assert.rejects(
+        currentHistoryEpisode(
+          {
+            ...discord,
+            get: async (_id, id) => ({
+              id,
+              channel_id: parentId,
+              author: { id: guildId },
+              type: 0,
+              content: "Wrong channel",
+              timestamp: "2025-01-02T00:00:00Z",
+            }),
+          },
+          db,
+          episode,
+        ),
+        /Invalid Discord source/,
+      );
+    } finally {
+      await db.end();
+    }
+  },
+);

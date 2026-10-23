@@ -863,6 +863,7 @@ test(
         ...(item.replyTo ? { message_reference: { message_id: item.replyTo } } : {}),
       });
       const discord = {
+        channel: async (id) => ({ id, guild_id: guildId, type: 0 }),
         recent: async () => [],
         get: async (_channel, id) => {
           const item = currentMessages.get(id);

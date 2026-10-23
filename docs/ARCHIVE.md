@@ -22,6 +22,19 @@ Historical model work uses selected manifests and exact current Discord validati
 selection, context exposure, committed review and representation are different
 stages. Archive availability alone does not establish complete Discord coverage.
 
+A restored snapshot has no automatic refresh. Before admitting another review
+batch, reconcile it with your ingestion source, retaining edits, tombstones,
+reply references and timestamp precision. Record the source snapshot time and
+compare message identities and mutation state; a recent message date or matching
+row count alone does not prove that older edits and deletions are synchronized.
+
+Historical threads use their own Discord channel ID, including archived public
+threads. The reader accepts legacy NULL thread tags and canonical
+`thread_id=channel_id` tags, validates the current guild and thread parent, and
+refreshes originals before learning. Historical review does not add a thread to
+the live reply routes. Completed read receipts remain committed even if their
+episode later enters a deferred state; a new range skips those reviewed targets.
+
 Stage a bounded, immutable selection with `pnpm history stage /absolute/private/selection.json`
 or a knowledge manifest with `pnpm knowledge stage /absolute/private/manifest.json`.
 Inspect the JSON examples and CLI validators before selecting real data. These
