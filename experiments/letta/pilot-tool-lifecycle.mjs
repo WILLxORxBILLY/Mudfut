@@ -1,8 +1,8 @@
 // The pinned SDK's tool mapper omits auto_background; set it on the exact
 // conversation through its supported protocol before starting a turn.
 export async function inlineApplicationTools(session, agentId, tools) {
-  if (!agentId || !session.conversationId || !tools.length)
-    throw new Error("Inline tools require an agent, conversation and application tools");
+  if (!agentId || session.agentId !== agentId || !session.conversationId || !tools.length)
+    throw new Error("Inline tools require a matching agent, conversation and application tools");
   const response = await session.sendCommand(
     {
       type: "runtime_external_tools_update",

@@ -13,6 +13,7 @@ test("application tools wait inline in only their exact conversation before the 
   let command;
   await inlineApplicationTools(
     {
+      agentId: "agent-test",
       conversationId: "conversation-test",
       sendCommand: async (value, options) => {
         command = value;
@@ -44,7 +45,11 @@ test("unconfirmed inline tool registration fails before a turn can proceed", asy
   for (const response of [{ success: false }, {}, undefined]) {
     await assert.rejects(
       inlineApplicationTools(
-        { conversationId: "conversation-test", sendCommand: async () => response },
+        {
+          agentId: "agent-test",
+          conversationId: "conversation-test",
+          sendCommand: async () => response,
+        },
         "agent-test",
         [{ name: "read_memory" }],
       ),
@@ -55,6 +60,7 @@ test("unconfirmed inline tool registration fails before a turn can proceed", asy
   await assert.rejects(
     inlineApplicationTools(
       {
+        agentId: "agent-test",
         conversationId: "conversation-test",
         sendCommand: async () => {
           throw failure;
@@ -65,6 +71,26 @@ test("unconfirmed inline tool registration fails before a turn can proceed", asy
     ),
     (error) => error === failure,
   );
+});
+
+test("inline registration rejects a different ready agent before sending any command", async () => {
+  let sent = false;
+  await assert.rejects(
+    inlineApplicationTools(
+      {
+        agentId: "other-agent",
+        conversationId: "conversation-test",
+        sendCommand: async () => {
+          sent = true;
+          return { success: true };
+        },
+      },
+      "agent-test",
+      [{ name: "read_memory" }],
+    ),
+    /matching agent/,
+  );
+  assert.equal(sent, false);
 });
 
 const deferred = () => {
