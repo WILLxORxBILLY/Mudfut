@@ -1,3 +1,34 @@
+// The pinned SDK's tool mapper omits auto_background; set it on the exact
+// conversation through its supported protocol before starting a turn.
+export async function inlineApplicationTools(session, agentId, tools) {
+  if (!agentId || session.agentId !== agentId || !session.conversationId || !tools.length)
+    throw new Error("Inline tools require a matching agent, conversation and application tools");
+  const response = await session.sendCommand(
+    {
+      type: "runtime_external_tools_update",
+      updates: [
+        {
+          runtimes: [{ agent_id: agentId, conversation_id: session.conversationId }],
+          external_tools: [
+            {
+              tools: tools.map(({ name, label, description, parameters }) => ({
+                name,
+                label,
+                description,
+                parameters,
+                auto_background: false,
+              })),
+            },
+          ],
+        },
+      ],
+    },
+    { responseType: "runtime_external_tools_update_response" },
+  );
+  if (response?.success !== true)
+    throw new Error("SDK did not confirm inline application-tool execution");
+}
+
 // The SDK dispatches external tools independently of its result stream and close().
 export function toolLifecycle() {
   let sealed = false;
