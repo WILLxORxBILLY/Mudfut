@@ -4,7 +4,13 @@ import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { state, assertPrivateState, safeError, saveJson } from "./runtime.mjs";
 import { pilotStore, validateScope, deliver } from "./pilot-store.mjs";
-import { discordTransport, refreshSources, archiveTool, startTyping } from "./pilot-discord.mjs";
+import {
+  discordTransport,
+  refreshSources,
+  syncKnowledgeSource,
+  archiveTool,
+  startTyping,
+} from "./pilot-discord.mjs";
 import { decodeUnderstanding } from "./pilot-memory.mjs";
 import { postgresUnderstanding } from "./pilot-memory-postgres.mjs";
 import { withLivePriority, livePriorityCheckpoint, progressPulse } from "./pilot-priority.mjs";
@@ -345,7 +351,7 @@ try {
               Boolean(meta.cursors[source.channelId]) &&
               (await store.isAddressed(source, bot.id, discord.get));
             await store.ingest(source, addressed, !knowledgeCommand);
-            await knowledge.registerSource(source);
+            await syncKnowledgeSource(knowledge, source);
             const commandHandled =
               knowledgeCommand && Boolean(meta.cursors[source.channelId])
                 ? await answerKnowledgeCommand({

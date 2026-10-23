@@ -183,6 +183,11 @@ export const archiveRelevance = {
     "Only returned sources were inspected by this tool; keyword-missing qualifications, other discussions and unread pages remain unassessed. Exhaustion is filter-scoped, not topic completeness or proof of an unchanged view.",
 };
 
+export async function syncKnowledgeSource(knowledge, source) {
+  if (hasTextEvidence(source)) await knowledge?.registerSource(source);
+  else await knowledge?.removeSource(source.id);
+}
+
 export async function refreshSources(
   store,
   discord,
@@ -216,8 +221,7 @@ export async function refreshSources(
     } else {
       const updated = sourceRecord(current, source.guildId, source.channelId);
       await store.ingest(updated, false, row.learnable);
-      if (hasTextEvidence(updated)) await knowledge?.registerSource(updated);
-      else await knowledge?.removeSource(updated.id);
+      await syncKnowledgeSource(knowledge, updated);
       if (row.hash !== digest(JSON.stringify(updated)))
         await record({
           type: "source_mutation",
