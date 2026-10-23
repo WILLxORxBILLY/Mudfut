@@ -33,7 +33,7 @@ jobs:
           pnpm test
       - name: Install PostgreSQL 16
         run: sudo apt-get update && sudo apt-get install --yes postgresql-16
-      - name: Exercise disposable PostgreSQL recovery and graph checks
+      - name: Exercise disposable PostgreSQL recovery and knowledge checks
         env:
           MUDFUT_PG_BIN: /usr/lib/postgresql/16/bin
           MUDFUT_CODEX_AUTH_FILE: /nonexistent/no-model-credentials
