@@ -78,7 +78,7 @@ try {
         );
       const sql = `SELECT m.message_id,m.author_id,m.author_display_name,m.content,m.created_at,m.reply_to_message_id
         FROM messages m WHERE m.guild_id=$1 AND m.channel_id=$2 AND m.deleted_at IS NULL
-        AND m.content IS NOT NULL AND m.thread_id IS NULL`;
+        AND m.content IS NOT NULL AND (m.thread_id IS NULL OR m.thread_id=m.channel_id)`;
       const focus = (
         await db.query(
           sql + " AND m.created_at BETWEEN $3 AND $4 ORDER BY m.created_at,m.message_id LIMIT 25",

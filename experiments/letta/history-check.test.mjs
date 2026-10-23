@@ -76,6 +76,7 @@ test("a fresh historical page resolves a whole window, with exact fallback and n
     version = "original";
   const exact = [];
   const discord = {
+    channel: async (id) => ({ id, guild_id: guildId, type: 0 }),
     recent: async () => [],
     around: async (_channel, id) => {
       assert.equal(id, ids[1]);
@@ -119,6 +120,7 @@ test(
         message_reference: { message_id: unresolvedReplyId },
       });
       const discord = {
+        channel: async (id) => ({ id, guild_id: guildId, type: 0 }),
         recent: async () => [],
         around: async () => [...observed.values()],
         get: async (_c, id) => observed.get(id) ?? null,
