@@ -18,6 +18,7 @@ export function historyMessage(row) {
     throw new Error("Invalid historical archive source row");
   return {
     id: row.id,
+    type: row.replyTo ? 19 : 0,
     channel_id: row.channelId,
     author: { id: row.authorId, username: row.authorName ?? "Unknown member" },
     content: row.content,

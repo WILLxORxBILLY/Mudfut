@@ -17,6 +17,7 @@ const id = (n) => String(555555555555555000n + BigInt(n));
 const time = (minute) => new Date(Date.UTC(2026, 5, 1, 12, minute)).toISOString();
 const message = (n, extra = {}) => ({
   id: id(n),
+  type: extra.message_reference ? 19 : 0,
   channel_id: channelId,
   author: { id: authorId, username: "Member" },
   timestamp: time(n),
@@ -354,10 +355,10 @@ test(
   { skip: process.env.CHECK_DATABASE !== "1" },
   async () =>
     fixture(async ({ originals, removed, fetched, insert, tools, discord }) => {
-      await insert(1, { timestamp: time(-45), channel_id: otherChannel });
+      await insert(1, { timestamp: time(-45) });
       await insert(2, {
         timestamp: time(-40),
-        message_reference: { message_id: id(1), channel_id: otherChannel },
+        message_reference: { message_id: id(1), channel_id: channelId },
       });
       await insert(3, { timestamp: time(-2) });
       await insert(4, { timestamp: time(0), message_reference: { message_id: id(2) } });
@@ -393,7 +394,7 @@ test(
       assert.match(result.referenceCaveat, /image presence\/content/);
       assert.ok(
         result.replyEdges.some(
-          (edge) => edge.from === id(2) && edge.to === id(1) && edge.crossChannel,
+          (edge) => edge.from === id(2) && edge.to === id(1) && !edge.crossChannel,
         ),
       );
       assert.equal(result.completeDiscussion, false);

@@ -76,6 +76,7 @@ try {
       const normalized = sourceRecord(
         {
           id: source.id,
+          type: source.replyTo ? 19 : 0,
           channel_id: source.channelId,
           content: source.content,
           author: { id: source.authorId, username: source.authorName },
