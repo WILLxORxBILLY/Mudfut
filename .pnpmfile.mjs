@@ -5,6 +5,10 @@ export const hooks = {
       ...config,
       overrides: {
         ...config.overrides,
+        "body-parser@>=2.0.0 <2.4.0": "2.4.0",
+        "undici@>=6.23.0 <6.29.1": "6.29.1",
+        "undici@>=8.0.0 <8.12.2": "8.12.2",
+        "openai@7.19.0>undici": "8.12.2",
         "source-map-js@<1.2.2": "1.2.2",
         "@modelcontextprotocol/sdk@<1.32.0": "1.32.0",
         "vite@>=7.0.0 <7.3.7": "7.3.7",

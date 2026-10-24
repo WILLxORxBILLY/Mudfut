@@ -1,6 +1,6 @@
 # Install an independent instance
 
-Supported host: macOS or Linux, Node 22, pnpm 11.28.2, and PostgreSQL 16. The local
+Supported host: macOS or Linux, Node 22, pnpm 11.28.7, and PostgreSQL 16. The local
 runtime requires a dedicated loopback database and role named `mudfut_pilot`.
 These are local installation names, not connections to any existing server.
 Windows and hosted multi-user deployment are not validated in this release.
