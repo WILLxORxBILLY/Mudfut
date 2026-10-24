@@ -60,6 +60,8 @@ without them; [historical archive access](docs/ARCHIVE.md) is optional.
 - Candidate annotations and cited profile, topic and history commands.
 - Durable work, interrupted-send reconciliation, a single-writer lock and bounded
   supervisor recovery.
+- Isolated archive failures and a read-only per-channel status report through
+  `pnpm bot:status`; see [operations](docs/OPERATIONS.md).
 
 ## Checks without model credentials
 

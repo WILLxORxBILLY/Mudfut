@@ -122,6 +122,7 @@ try {
       "pilot-check.test.mjs",
       "security-check.test.mjs",
       "recovery-check.test.mjs",
+      "reliability.test.mjs",
       "history-check.test.mjs",
       "archive-recall.test.mjs",
       "history-automation.test.mjs",

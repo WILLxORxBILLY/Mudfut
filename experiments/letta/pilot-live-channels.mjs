@@ -6,20 +6,38 @@ export function liveSource(message, config) {
   return sourceRecord(message, config.guildId, message.channel_id);
 }
 
-export async function pollLiveChannels(store, discord, config, channelIds = replyChannels(config)) {
+export async function pollLiveChannels(
+  store,
+  discord,
+  config,
+  channelIds = replyChannels(config),
+  observe = async () => {},
+) {
   const { cursors } = await store.meta();
   // Each read is independent; no progress is committed unless the entire poll succeeds.
-  const pages = await Promise.all(
+  const pages = await Promise.allSettled(
     channelIds.map(async (channelId) => {
       const messages = cursors[channelId]
         ? await discord.after(channelId, cursors[channelId])
         : await discord.recent(channelId);
       if (messages.some((message) => message.channel_id !== channelId))
         throw new Error("Discord returned a message from a different channel");
-      return messages;
+      return { messages, at: new Date().toISOString() };
     }),
   );
-  return pages.flat().sort((a, b) => (BigInt(a.id) < BigInt(b.id) ? -1 : 1));
+  await observe(
+    pages.map((page, index) => ({
+      channelId: channelIds[index],
+      ok: page.status === "fulfilled",
+      at: page.value?.at ?? new Date().toISOString(),
+      ...(page.status === "rejected" ? { error: page.reason } : {}),
+    })),
+  );
+  const failed = pages.find((page) => page.status === "rejected");
+  if (failed) throw failed.reason;
+  return pages
+    .flatMap((page) => page.value.messages)
+    .sort((a, b) => (BigInt(a.id) < BigInt(b.id) ? -1 : 1));
 }
 
 export async function liveChannelPlan(discord, config) {
@@ -38,6 +56,7 @@ export async function liveChannelPlan(discord, config) {
   const forumIds = channels.filter((c) => c.type === 15).map((c) => c.id);
   const textIds = channels.filter((c) => c.type !== 15).map((c) => c.id);
   return {
+    routes: channels.map(({ id, name, type }) => ({ id, name, type })),
     forumIds,
     async discover() {
       if (!forumIds.length) return { channelIds: textIds, threads: [] };
