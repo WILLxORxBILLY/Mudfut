@@ -10,7 +10,7 @@ production gateway and its deployment machinery are outside this release.
 
 ## Install
 
-Use Node 22, pnpm 11.28.2 and PostgreSQL 16. Clone the repository and install the
+Use Node 22, pnpm 11.28.7 and PostgreSQL 16. Clone the repository and install the
 locked dependencies:
 
 ```sh
