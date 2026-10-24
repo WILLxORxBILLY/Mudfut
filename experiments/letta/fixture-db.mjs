@@ -116,6 +116,8 @@ try {
     await run([
       "--test",
       "check.test.mjs",
+      "reply-reference.test.mjs",
+      "coverage-inspector.test.mjs",
       "configuration.test.mjs",
       "pilot-check.test.mjs",
       "security-check.test.mjs",

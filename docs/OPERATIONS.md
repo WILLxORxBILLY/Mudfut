@@ -36,3 +36,70 @@ The pinned upstream CLI currently reports React peer-version warnings for its
 terminal UI dependencies. This release uses its headless local SDK path and does
 not claim support for embedding that terminal UI or Electron. The headless fixture
 checks pass; those warnings are not presented as a clean peer-dependency audit.
+
+## Offline coverage and provenance inspector
+
+`pnpm coverage:inspect /private/coverage.json /private/coverage-report.html`
+renders one private audit snapshot into a self-contained operator report. Add
+`--open` to open that HTML file with the operating system. It needs Node 22 only:
+no database credentials, bot process, model, web server or external assets. It
+never recollects evidence or writes runtime state. Output uses mode `0600` and
+must be a new path outside the repository; existing reports are preserved.
+
+The input must be a private regular JSON file outside the repository (no symlink,
+maximum 16 MiB), with `schemaVersion: "mudfut-coverage-v1"`. The collector owns the
+counts and evidence. This viewer validates their shape; it does not independently
+prove a review or substitute archive availability for learning. Regenerate from a
+new collector snapshot to see changed state. Capture timestamps and snapshot age
+remain visible; a report over 24 hours old is explicitly marked as old.
+
+The snapshot contract is metadata only:
+
+- `generatedAt`: ISO timestamp with timezone. `capturedAt` contains ISO timestamps
+  or `null` for `archive`, `native` and `cloudProof`; store snapshots may differ.
+- `scope`: bounded metadata describing actual collection, enrollment and reply
+  scope, explicit policy exclusions, inventory completeness and denominators.
+- `summary`: independent source counts, each a nonnegative integer or `null`.
+  Supported keys are `archived`, `searchable`, `reviewedExactCurrentRevision`,
+  `reviewedStaleRevision`, `reviewUnknownRevision`,
+  `reviewedTemporalCurrentCandidates`, `unreviewed`, `retainedProvenance`,
+  `pending`, `unknown` and `excluded`. Missing values display **Unknown**.
+- `channels`: up to 2,000 records with `id`, optional `name`/`parentId`,
+  `scope` (`archived`, `policy-excluded` or `native-only`), `metrics`, `notes`,
+  and `sources`. Optional `sourcesComplete`, `sourcesLimit` and
+  `sourcesSelection` describe the exported drill-down selection.
+- `sources`: up to 10,000 details across channels, each with `id`, optional
+  validated Discord `url`, timestamps `createdAt`/`currentEditedAt`/`reviewedAt`,
+  `currentContentHash`, `archiveState`, `reviewStatus`
+  (`current`, `stale`, `unknown-revision`, `unreviewed`), optional
+  `reviewDecision` (`retained`, `irrelevant` or `null`), `proof` (method string or
+  `null`) and `retainedProvenance` counts `currentEntries`/`historicalVersions`.
+  Current review requires `proof: "direct-immutable-binding"`.
+  `"temporal-reconstruction-only"` must remain `unknown-revision`.
+- `sourceCoverage`: `{included, totalKnown, selection, complete}` describes the
+  number of exported source details, known denominator (integer or `null`),
+  selection method and completeness for that stated scope. Optional
+  `definitions` is an array of `{key, label, description, unit}` for the supported
+  metrics. Optional `freshness` contains bounded collector reconciliation metadata.
+  `limitations` is a required array of accounting qualifications.
+
+Use channel buttons, search and review-status filters to inspect source metadata
+and retained-memory citation counts. The report has no memory text or original
+message bodies. Exact-current review, earlier-revision review, revision-unknown
+receipts and temporal reconstruction remain separate evidence tiers. Temporal
+reconstruction is an overlapping tier within revision-unknown review; it is not
+upgraded to direct proof. Retained provenance does not prove exact-current review.
+Pending and excluded evidence do not establish completion. Parent/thread rollups
+and the other measures can overlap, so the report never sums them into an
+exclusive funnel or invents a full-server completeness percentage.
+
+The report embeds safely serialized metadata, uses `textContent` for display and
+allows only its exact hashed script/style under a restrictive content security
+policy. It makes no network requests; validated Discord links open only on click.
+Keep both JSON and HTML private, because source IDs, hashes and provenance metadata
+can still be sensitive. Larger selections need paginated collector exports; this
+viewer intentionally refuses oversized input instead of silently truncating it.
+
+`node experiments/letta/coverage-inspector.test.mjs` is the focused assert-based
+selfcheck for invalid metadata, tier confusion, XSS serialization and CSP hashes.
+It contains inline canaries only and does not read operator state.

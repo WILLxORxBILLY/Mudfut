@@ -19,7 +19,8 @@
     "letta:check": "node --test experiments/letta/check.test.mjs",
     "letta:live": "node experiments/letta/fixture-db.mjs live",
     "test": "node --test experiments/letta/*.test.mjs",
-    "format:check": "prettier --check ."
+    "format:check": "prettier --check .",
+    "coverage:inspect": "node experiments/letta/coverage-inspector.mjs"
   },
   "dependencies": {
     "@letta-ai/letta-agent-sdk": "0.8.44",
