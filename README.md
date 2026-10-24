@@ -1,6 +1,6 @@
 # Mudfüt
 
-A self-hosted Discord community bot with source-backed memory. It learns from a
+A self-hosted Discord community bot with source-backed memory. It learns from
 configured channels, replies when addressed, and keeps dated, revisable
 understanding grounded in original messages.
 
@@ -33,6 +33,24 @@ The model is configurable within the existing subscription provider. Availabilit
 and subscription access depend on your account; there is no automatic paid API
 fallback. Authentication is required only for model-backed bot operations, not
 for fixture tests.
+
+## Where it runs
+
+Mudfüt runs on a macOS or Linux machine you operate, with PostgreSQL on that
+same host. **Fly.io is not required.** GitHub hosts the source code; cloning or
+installing this repository does not deploy a hosted bot.
+
+For continuous replies and learning, keep the host awake and connected to the
+internet, PostgreSQL available, and the bot worker running. Replies stop while
+the host sleeps, loses connectivity, or the worker is stopped. Installing a
+background service does not keep a sleeping machine online; see
+[host availability](docs/INSTALL.md#host-availability).
+
+In the maintainer's current installation, a Mac runs all conversational replies.
+Fly.io still runs separate archive ingestion and background archive processing.
+Those legacy services and their deployment machinery are outside this release;
+they are not prerequisites for running your own bot. A new installation can run
+without them; [historical archive access](docs/ARCHIVE.md) is optional.
 
 ## What is included
 
