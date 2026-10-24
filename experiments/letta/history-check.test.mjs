@@ -117,6 +117,7 @@ test(
       const unresolvedReplyId = "555555555555555504";
       observed.set(ids[1], {
         ...message(ids[1]),
+        type: 19,
         message_reference: { message_id: unresolvedReplyId },
       });
       const discord = {
@@ -453,6 +454,7 @@ test("shared-source review is limited to new keys; lineage updates remain valid"
       ...message(ids[1]),
       content: "I still like tea.",
       timestamp: "2026-10-02T12:00:00Z",
+      type: 19,
       message_reference: { message_id: originalSource.id },
     },
     guildId,
@@ -523,6 +525,7 @@ test("exact claim clones cannot consume memory capacity; sourced changes stay di
     {
       ...message(ids[1]),
       content: "A later changed view",
+      type: 19,
       message_reference: { message_id: ids[0] },
     },
     guildId,

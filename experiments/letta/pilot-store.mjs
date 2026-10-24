@@ -49,6 +49,29 @@ export function validateScope(config) {
   return { ...config, historyScope: config.historyScope ?? [] };
 }
 
+// A forward/crosspost reference is not a reply edge. Missing reference scope
+// inherits the validated REST endpoint; explicit scope must match it.
+export function discordReplyTo(message, guildId, channelId) {
+  const reference = message?.message_reference;
+  const validId = (id) =>
+    typeof id === "string" && /^[1-9]\d{0,19}$/.test(id) && BigInt(id) <= 18446744073709551615n;
+  if (
+    message?.type !== 19 ||
+    (reference?.type ?? 0) !== 0 ||
+    !validId(message.id) ||
+    !validId(reference?.message_id) ||
+    reference.message_id === message.id ||
+    !validId(guildId) ||
+    !validId(channelId) ||
+    message.channel_id !== channelId ||
+    (message.guild_id !== undefined && message.guild_id !== guildId) ||
+    (reference.channel_id !== undefined && reference.channel_id !== channelId) ||
+    (reference.guild_id !== undefined && reference.guild_id !== guildId)
+  )
+    return null;
+  return reference.message_id;
+}
+
 export function sourceRecord(message, guildId, channelId) {
   if (
     !snowflake(message.id) ||
@@ -68,7 +91,7 @@ export function sourceRecord(message, guildId, channelId) {
     content: message.content,
     createdAt: message.timestamp,
     editedAt: message.edited_timestamp ?? null,
-    replyTo: message.message_reference?.message_id ?? null,
+    replyTo: discordReplyTo(message, guildId, channelId),
     url: `https://discord.com/channels/${guildId}/${channelId}/${message.id}`,
   };
 }

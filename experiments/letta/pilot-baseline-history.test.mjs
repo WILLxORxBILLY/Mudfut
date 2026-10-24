@@ -17,6 +17,7 @@ test("historical rows become source-record-compatible messages", () => {
     }),
     {
       id: "555555555555555555",
+      type: 19,
       channel_id: "222222222222222222",
       author: { id: "333333333333333333", username: "Member" },
       content: "A stored source",

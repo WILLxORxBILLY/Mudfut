@@ -855,6 +855,7 @@ test(
       ]);
       const asDiscord = (item) => ({
         id: item.id,
+        type: item.replyTo ? 19 : 0,
         channel_id: item.channelId,
         author: { id: item.authorId, username: item.authorName },
         content: item.content,
