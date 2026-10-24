@@ -193,6 +193,7 @@ export async function channelStatus(
         lastSuccessfulPollAt: reading?.lastSuccessAt ?? null,
         lastPollFailureAt: reading?.lastFailureAt ?? null,
         lastPollErrorCode: reading?.code ?? null,
+        lastPollHttpStatus: reading?.status ?? null,
         pendingAddressed: count.pending ?? 0,
         heldSources: count.source_holds ?? 0,
         readyReplies: count.ready ?? 0,

@@ -52,6 +52,7 @@ export function archiveReader(client, { report = async () => {}, now = Date.now 
   });
   return {
     get paused() {
+      if (reportFailure) throw reportFailure;
       return Boolean(failure);
     },
     status: () => ({ ...status }),

@@ -130,6 +130,23 @@ test("archive status persistence errors remain visible instead of silently conti
     (error) => error === storage,
   );
   await reader.end();
+  const idleClient = Object.assign(new EventEmitter(), {
+    connect: async () => {},
+    end: async () => {},
+  });
+  const idleReader = archiveReader(idleClient, {
+    report: async (s) => {
+      if (s.state === "paused") throw storage;
+    },
+  });
+  await idleReader.connect();
+  idleClient.emit("error", new Error("connection closed"));
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.throws(
+    () => idleReader.paused,
+    (error) => error === storage,
+  );
+  await idleReader.end();
 });
 
 test("partial channel polls retain independent read evidence without committing a cursor", async () => {
