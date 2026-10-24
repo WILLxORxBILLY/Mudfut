@@ -297,18 +297,55 @@ test(
       await admin.query(`CREATE DATABASE ${name}`);
       db = new pg.Client({ ...credentials, database: name });
       await db.connect();
-      await db.query(`CREATE TABLE messages(guild_id text,channel_id text,message_id text,created_at timestamptz,
-      deleted_at timestamptz,content text,thread_id text);
-      CREATE TABLE pilot_history_passes(id text PRIMARY KEY,manifest jsonb);
+      await db.query(
+        await readFile(new URL("../../docs/archive-schema.sql", import.meta.url), "utf8"),
+      );
+      await db.query(`CREATE TABLE pilot_history_passes(id text PRIMARY KEY,manifest jsonb);
       CREATE TABLE pilot_history_episodes(id text PRIMARY KEY,pass_id text,manifest jsonb,
         status text DEFAULT 'queued',read_ids text[] DEFAULT '{}',context_ids text[] DEFAULT '{}',excluded jsonb);`);
       const original = row(0, 0),
         next = row(1, 2);
       for (const message of [original, next])
         await db.query(
-          "INSERT INTO messages(guild_id,channel_id,message_id,created_at,content) VALUES($1,$2,$3,$4,'A conversation')",
+          `INSERT INTO messages(guild_id,channel_id,message_id,created_at,content,
+            author_id,author_display_name,content_hash)
+           VALUES($1,$2,$3,$4,'A conversation','333333333333333333','Fictional member',repeat('a',64))`,
           [guildId, channelId, message.message_id, message.created_at],
         );
+      // The tiny fixture would otherwise prefer a sequential scan. Check that
+      // the shipped schema supports both production window/context query plans.
+      await db.query("SET enable_seqscan=off");
+      try {
+        const plans = [];
+        const selected = await selectAutomaticHistoryWindow(
+          {
+            query: async (sql, args) => {
+              plans.push(
+                (await db.query("EXPLAIN (FORMAT JSON) " + sql, args)).rows[0]["QUERY PLAN"][0]
+                  .Plan,
+              );
+              return db.query(sql, args);
+            },
+          },
+          validateHistoryAutomation(settings).channels[0],
+          { at: settings.channels[0].start, id: "0" },
+          { maxMessages: 24, windowMinutes: 30 },
+        );
+        assert.deepEqual(
+          selected.targets.map((r) => r.message_id),
+          [original.message_id, next.message_id],
+        );
+        const nodes = (plan) => [plan, ...(plan.Plans ?? []).flatMap(nodes)];
+        assert.equal(plans.length, 2);
+        for (const plan of plans)
+          assert(nodes(plan).some((node) => node["Index Name"] === "messages_history_chronology"));
+        assert(
+          !nodes(plans[0]).some((node) => node["Node Type"].includes("Sort")),
+          "target chronology must be index ordered",
+        );
+      } finally {
+        await db.query("RESET enable_seqscan");
+      }
       await db.query(
         "INSERT INTO pilot_history_episodes(id,status,read_ids) VALUES('manual:committed','deferred',$1)",
         [[original.message_id]],

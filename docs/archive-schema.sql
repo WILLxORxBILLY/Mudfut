@@ -17,3 +17,7 @@ CREATE TABLE messages (
   PRIMARY KEY (guild_id, message_id)
 );
 CREATE INDEX messages_channel_time ON messages(guild_id, channel_id, created_at, message_id);
+CREATE INDEX messages_history_chronology ON messages
+  (guild_id, channel_id, created_at, (message_id::numeric)) INCLUDE (message_id)
+  WHERE deleted_at IS NULL AND content IS NOT NULL
+    AND (thread_id IS NULL OR thread_id=channel_id);
