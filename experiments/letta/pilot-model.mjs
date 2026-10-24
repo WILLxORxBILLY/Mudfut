@@ -28,6 +28,7 @@ import { searchGapInvestigator } from "./pilot-search-gaps.mjs";
 import { abortForDeadline } from "./pilot-deadline-abort.mjs";
 import { validateKnowledgeViewQuery } from "./community-knowledge.mjs";
 import { personaStyle } from "./configuration.mjs";
+import { archiveToolBoundary } from "./pilot-archive-reader.mjs";
 
 const persona = `You are Mudfüt, a sharp, funny regular in a small Discord community. You know people over time, have opinions, tease and disagree naturally, and change your mind when corrected. Use casual direct prose, dry humor, occasional profanity when it fits, and a little country flavor without a costume. No corporate assistant voice, moral lectures, obligatory politeness, or automatic agreement. Do not invent familiarity. Keep Discord replies under 1600 characters.
 PostgreSQL messages are authoritative about what was said. Your Letta MemFS note is revisable understanding, never a verbatim source. Distinguish jokes, direct claims and your inferences. Cite actual source message IDs/links in memory. Retrieve original sources before quoting. Your own replies are not evidence about members.
@@ -218,53 +219,67 @@ export async function pilotModel(
         description,
         parameters,
         execute: (_id, input) =>
-          toolBoundary.run(async () => {
-            let result = await timing.measure(`tool:${name}`, () => execute(input));
-            if (
-              gapInvestigator &&
-              ["search_archive", "browse_archive", "read_discussion"].includes(name)
-            ) {
-              const decision = await gapInvestigator.observe(result.sources, { inspect: false });
-              await record({ type: "search_gap_decision", parentTool: name, decision, epoch });
-              if (
-                [
-                  "inspected",
-                  "gap-uninspected",
-                  "budget-uninspected",
-                  "anchor-budget-uninspected",
-                  "probe-budget-used",
-                ].includes(decision.status)
-              )
-                result = {
-                  ...result,
-                  automaticGapInspection: {
-                    ...decision,
-                    ...(decision.gap
-                      ? {
-                          nextBrowse: {
-                            channelIds: [decision.gap.channelId],
-                            after: decision.gap.after,
-                            before: new Date(Date.parse(decision.gap.before) + 1).toISOString(),
-                            limit: 24,
-                          },
-                        }
-                      : {}),
-                  },
-                };
-            }
-            await record({
-              type: "application_tool",
-              name,
-              input,
-              result,
-              epoch,
-              executionCompletedAfterModelStream: toolBoundary.sealed,
-            });
-            provenance.observe(name, input, result, {
-              completedAfterModelStream: toolBoundary.sealed,
-            });
-            return { content: [{ type: "text", text: JSON.stringify(result) }] };
-          }),
+          toolBoundary.run(() =>
+            archiveToolBoundary(
+              async () => {
+                let result = await timing.measure(`tool:${name}`, () => execute(input));
+                if (
+                  gapInvestigator &&
+                  ["search_archive", "browse_archive", "read_discussion"].includes(name)
+                ) {
+                  const decision = await gapInvestigator.observe(result.sources, {
+                    inspect: false,
+                  });
+                  await record({ type: "search_gap_decision", parentTool: name, decision, epoch });
+                  if (
+                    [
+                      "inspected",
+                      "gap-uninspected",
+                      "budget-uninspected",
+                      "anchor-budget-uninspected",
+                      "probe-budget-used",
+                    ].includes(decision.status)
+                  )
+                    result = {
+                      ...result,
+                      automaticGapInspection: {
+                        ...decision,
+                        ...(decision.gap
+                          ? {
+                              nextBrowse: {
+                                channelIds: [decision.gap.channelId],
+                                after: decision.gap.after,
+                                before: new Date(Date.parse(decision.gap.before) + 1).toISOString(),
+                                limit: 24,
+                              },
+                            }
+                          : {}),
+                      },
+                    };
+                }
+                await record({
+                  type: "application_tool",
+                  name,
+                  input,
+                  result,
+                  epoch,
+                  executionCompletedAfterModelStream: toolBoundary.sealed,
+                });
+                provenance.observe(name, input, result, {
+                  completedAfterModelStream: toolBoundary.sealed,
+                });
+                return { content: [{ type: "text", text: JSON.stringify(result) }] };
+              },
+              () =>
+                record({
+                  type: "application_tool_unavailable",
+                  name,
+                  input,
+                  code: "ARCHIVE_UNAVAILABLE",
+                  epoch,
+                }),
+            ),
+          ),
       });
       const tools = [
         tool(

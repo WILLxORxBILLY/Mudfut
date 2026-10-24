@@ -13,8 +13,34 @@ reviewed service configuration elsewhere. Its default service identity supports
 one installation per macOS user. Do not run install/start/stop/resume against an
 existing installation merely to test the source checkout.
 
-`pnpm bot:status` reads the existing pilot tables (it does not initialize a new
-installation). `pnpm knowledge report` reports bounded knowledge state.
+`pnpm bot:status` prints a JSON report from a read-only transaction over the
+existing pilot tables; it does not initialize an installation, contact Discord,
+call a model, or acquire the memory-writer lock. Each configured destination
+lists its last successful and failed poll, pending addressed messages, ready,
+in-flight or held replies, and its latest recorded delivery. Forum rows include
+active discussion counts and individual retained thread states. Missing poll
+evidence is `unobserved`, and old evidence is explicitly stale. A configured route
+or successful read does not establish send permission or a delivered reply.
+Delivery links come from local Discord acceptance receipts; the report does not
+recheck whether those messages still exist. Keep this output private.
+Freshness uses the default worker watchdog's four-minute interval; timestamps
+remain visible. Delivery records that cannot be assigned to a configured route
+are reported separately, including any that require inspection.
+
+The worker stores poll metadata in private `channel-polls.json` and archive
+availability in `archive-status.json`. Runtime progress, route access and delivery
+are separate observations. `pnpm knowledge report` reports bounded knowledge state.
+
+An optional archive connection or query failure pauses that reader for the rest
+of the worker process. Background history remains unread and its saved cursors
+are retained; live polling and replies using available evidence continue. Archive
+tools explicitly report unavailable evidence rather than empty or exhausted
+search results. Inspect `archive-status.json`, repair the archive/index/access
+problem, then stop and start the worker to retry. A native memory database,
+prepared-candidate, or ambiguous-delivery failure keeps its existing recovery
+safeguards; an archive pause does not authorize clearing a worker or delivery hold.
+Archive `connected` means only that a connection opened; `available` records a
+successful read, and `paused` records a failure requiring repair and restart.
 
 For a route change, stop the current worker and inspect prepared memory, unsent
 output and any other runtime using the same Discord identity. `pilot-route.mjs`

@@ -23,6 +23,8 @@ import { timingTrace } from "./pilot-timing.mjs";
 import { currentHistoryEpisode, historyQueue } from "./pilot-history.mjs";
 import { operatorRequests } from "./pilot-requests.mjs";
 import { historicalFailureClass } from "./pilot-history-failures.mjs";
+import { archiveReader, ArchiveUnavailable, optionalArchive } from "./pilot-archive-reader.mjs";
+import { channelPollStatus, channelStatus } from "./pilot-channel-status.mjs";
 import { archiveDiscussions } from "./pilot-discussions.mjs";
 import {
   archiveAuthorityDigest,
@@ -45,6 +47,14 @@ async function privateFile(name) {
   if (!stat.isFile() || stat.mode & 0o077)
     throw new Error(`${name} must be a private regular file (chmod 600)`);
   return readFile(path, "utf8");
+}
+async function optionalJson(name) {
+  try {
+    return JSON.parse(await privateFile(name));
+  } catch (error) {
+    if (error.code !== "ENOENT") throw error;
+    return null;
+  }
 }
 const config = validateScope(JSON.parse(await privateFile("pilot.json")));
 const connection = JSON.parse(await privateFile("postgres.json"));
@@ -89,17 +99,28 @@ memoryDb.on("error", lostConnection);
 try {
   await db.connect();
   if (mode === "status") {
-    for (const query of [
-      "SELECT cursor,epoch,rebuild FROM pilot_meta",
-      "SELECT deleted,learned,count(*) FROM pilot_sources GROUP BY deleted,learned",
-      "SELECT status,count(*) FROM pilot_work GROUP BY status",
-      "SELECT status,count(*) FROM pilot_outbox GROUP BY status",
-    ])
-      console.log((await db.query(query)).rows);
+    console.log(
+      JSON.stringify(
+        await channelStatus(db, config, {
+          poll: await optionalJson("channel-polls.json"),
+          health: await optionalJson("pilot-health.json"),
+          recovery: await optionalJson("pilot-recovery.json"),
+          archive: (await optionalJson("history-postgres.json"))
+            ? await optionalJson("archive-status.json")
+            : { state: "not-configured" },
+        }),
+        null,
+        2,
+      ),
+    );
   } else {
     const discord = discordTransport((await privateFile("discord-token")).trim(), record);
     const bot = await discord.me();
     const channelPlan = await liveChannelPlan(discord, config);
+    const polls = channelPollStatus(config, channelPlan.routes, {
+      initial: await optionalJson("channel-polls.json"),
+      save: (snapshot) => saveJson(join(state, "channel-polls.json"), snapshot),
+    });
     let liveConfig = config;
     const store = await pilotStore(db, config);
     knowledge = await communityKnowledge(db);
@@ -135,13 +156,21 @@ try {
       const credentials = historyCredentials;
       if (credentials.host !== "127.0.0.1" || credentials.user !== "mudfut_history_reader")
         throw new Error("History requires the separate local read-only role");
-      history = new pg.Client({
-        ...credentials,
-        statement_timeout: 10000,
-        connectionTimeoutMillis: 10000,
-      });
-      history.on("error", lostConnection);
-      await history.connect();
+      history = archiveReader(
+        new pg.Client({
+          ...credentials,
+          options: "-c default_transaction_read_only=on",
+          statement_timeout: 10000,
+          connectionTimeoutMillis: 10000,
+        }),
+        {
+          report: async (status) => {
+            await saveJson(join(state, "archive-status.json"), status);
+            if (status.state === "paused") await record({ type: "archive_paused", ...status });
+          },
+        },
+      );
+      await optionalArchive(() => history.connect());
     }
     await memoryDb.connect();
     let activeCheckpoint;
@@ -180,10 +209,22 @@ try {
     const requests = await operatorRequests(store, state, record);
     const bufferedIncoming = new Map();
     const pollFresh = async () => {
-      const discovered = await channelPlan.discover();
+      let discovered;
+      try {
+        discovered = { ...(await channelPlan.discover()), at: new Date().toISOString() };
+      } catch (error) {
+        await polls.discoveryFailed(error);
+        throw error;
+      }
       await store.registerThreads(discovered.threads, channelPlan.forumIds);
       liveConfig = { ...config, liveChannelIds: discovered.channelIds };
-      const messages = await pollLiveChannels(store, discord, config, discovered.channelIds);
+      const messages = await pollLiveChannels(
+        store,
+        discord,
+        config,
+        discovered.channelIds,
+        (results) => polls.polled(discovered, results),
+      );
       await pulse("live_poll_complete");
       return messages;
     };
@@ -247,13 +288,15 @@ try {
         await checkpoint();
         return false;
       };
-      const outcome = await reconcilePendingHistoryDerivations(knowledge, {
-        loadEpisode: (episode, shouldYield) =>
-          currentHistoryEpisode(discord, history, episode, shouldYield),
-        archiveAuthority: async (manifest) =>
-          archiveAuthorityDigest(manifest.archiveConnectionId, historyCredentials),
-        shouldYield,
-      });
+      const outcome = await optionalArchive(() =>
+        reconcilePendingHistoryDerivations(knowledge, {
+          loadEpisode: (episode, shouldYield) =>
+            currentHistoryEpisode(discord, history, episode, shouldYield),
+          archiveAuthority: async (manifest) =>
+            archiveAuthorityDigest(manifest.archiveConnectionId, historyCredentials),
+          shouldYield,
+        }),
+      );
       if (outcome.disposition === "recorded")
         await record({
           type: "community_history_derivation",
@@ -416,7 +459,7 @@ try {
         batch = await store.next();
         if (!batch?.replyTo) batch = (await requests.next()) ?? batch;
         timing.event.operatorRequestId = batch?.operatorRequest?.id ?? null;
-        if (!batch && mode !== "recall-proof") {
+        if (!batch && mode !== "recall-proof" && !history?.paused) {
           phase = "history_load";
           batch = await timing.measure("history_load", () => learning.next());
           batch = await timing.measure("correction_review_context", () =>
@@ -523,6 +566,15 @@ try {
             incomingIds: error.messages.map((message) => message.id),
             queuedUnread: Boolean(batch?.historyEpisode),
           });
+        } else if (
+          error instanceof ArchiveUnavailable &&
+          phase === "history_load" &&
+          !stopping &&
+          !connectionFailure
+        ) {
+          // No prepared candidate or native transaction is bypassed here.
+          // The archive reader records its pause; queued selections remain unread.
+          await pulse("archive_paused_live_continues");
         } else if (
           batch?.operatorRequest &&
           !stopping &&
