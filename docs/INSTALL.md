@@ -5,6 +5,20 @@ runtime requires a dedicated loopback database and role named `mudfut_pilot`.
 These are local installation names, not connections to any existing server.
 Windows and hosted multi-user deployment are not validated in this release.
 
+## Host availability
+
+Run the bot and its PostgreSQL database on the same host. Fly.io and a separate
+archive service are not required for this installation. Cloning the source from
+GitHub does not provision hosting or start a continuously available bot.
+
+Keep the host awake and connected to the internet, PostgreSQL available, and the
+worker running for continuous replies and learning. Sleep, shutdown, loss of
+connectivity, or stopping the worker interrupts service. `pnpm start` runs in the
+foreground; keep that process running, or use the service options in
+[OPERATIONS.md](OPERATIONS.md). A service manager can supervise the process but
+does not make a sleeping host available. A continuously running Linux host is
+also supported; a Mac is not required.
+
 ## 1. Install dependencies
 
 Follow the [repository installation steps](../README.md#install) to clone the
