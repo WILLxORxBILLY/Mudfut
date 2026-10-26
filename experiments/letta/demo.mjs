@@ -1,7 +1,7 @@
 import { readFile, appendFile, mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
-import { makeClient, state, transcriptDir, model, saveJson, safeError } from "./runtime.mjs";
+import { makeClient, state, transcriptDir, runtimeModel, saveJson, safeError } from "./runtime.mjs";
 import { openArchive, seed, insertSource, ambient, correction, searchArchive } from "./archive.mjs";
 import { memoryStore } from "./memory.mjs";
 
@@ -12,6 +12,7 @@ const chatInput = process.argv.slice(3).join(" ").trim();
 if (phase === "chat" && (!chatInput || chatInput.length > 12000))
   throw new Error("Supply a chat message of 1–12000 characters");
 const memoryOnly = ["recall", "spontaneous"].includes(phase);
+const model = runtimeModel();
 const client = await makeClient();
 const pool = await openArchive();
 const logDir = transcriptDir;

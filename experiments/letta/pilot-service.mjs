@@ -5,6 +5,7 @@ import { dirname, join, resolve } from "node:path";
 import { state, root, assertPrivateState, saveJson } from "./runtime.mjs";
 import { readRecovery } from "./pilot-supervisor.mjs";
 import { setTimeout as delay } from "node:timers/promises";
+import { serviceProgramArguments } from "./configuration.mjs";
 
 process.umask(0o077);
 if (process.platform !== "darwin") throw new Error("This service installer targets macOS launchd");
@@ -72,7 +73,9 @@ if (command === "install") {
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
 <key>Label</key><string>${label}</string>
-<key>ProgramArguments</key><array><string>${xml(process.execPath)}</string><string>${xml(join(root, "pilot-supervisor.mjs"))}</string></array>
+<key>ProgramArguments</key><array>${serviceProgramArguments(process.execPath, root)
+      .map((argument) => `<string>${xml(argument)}</string>`)
+      .join("")}</array>
 <key>WorkingDirectory</key><string>${xml(resolve(root, "../.."))}</string>
 <key>EnvironmentVariables</key><dict><key>MUDFUT_STATE_DIR</key><string>${xml(state)}</string><key>MUDFUT_AUTH_MODE</key><string>letta</string><key>PATH</key><string>${xml(dirname(process.execPath))}:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string></dict>
 <key>RunAtLoad</key><true/><key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict>

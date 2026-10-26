@@ -1,5 +1,13 @@
 import { lstat, readFile } from "node:fs/promises";
-import { isAbsolute } from "node:path";
+import { isAbsolute, resolve } from "node:path";
+
+export function serviceProgramArguments(executable, runtimeRoot) {
+  return [
+    executable,
+    `--env-file-if-exists=${resolve(runtimeRoot, "../..", ".env")}`,
+    resolve(runtimeRoot, "pilot-supervisor.mjs"),
+  ];
+}
 
 export function configuredModel(value = "chatgpt-plus-pro/gpt-6-sol") {
   if (

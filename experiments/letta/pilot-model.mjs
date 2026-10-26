@@ -2,7 +2,7 @@ import { readFile, appendFile, mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { memoryStore } from "./memory.mjs";
-import { makeClient, state, model, saveJson } from "./runtime.mjs";
+import { makeClient, state, runtimeModel, saveJson, assertPrivateState } from "./runtime.mjs";
 import {
   understandingStore,
   decodeUnderstanding,
@@ -45,6 +45,7 @@ export function rejectCorrectionRequestEvidence(patch, correctionSourceIds) {
 }
 
 export async function record(event) {
+  assertPrivateState(state);
   await mkdir(join(state, "transcripts"), { recursive: true, mode: 0o700 });
   await appendFile(
     join(state, "transcripts", "pilot.jsonl"),
@@ -65,6 +66,7 @@ export async function pilotModel(
     knowledgeViews,
   } = {},
 ) {
+  const model = runtimeModel();
   const style = await personaStyle(process.env.MUDFUT_PERSONA_STYLE_FILE);
   const systemPersona = style ? `${persona}\n\n${style}` : persona;
   const client = await makeClient();

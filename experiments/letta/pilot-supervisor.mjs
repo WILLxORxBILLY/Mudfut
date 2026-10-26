@@ -3,7 +3,7 @@ import { readFile, rm } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
-import { state, root, assertPrivateState, saveJson, safeError } from "./runtime.mjs";
+import { state, root, assertPrivateState, saveJson, safeError, runtimeModel } from "./runtime.mjs";
 import { record } from "./pilot-model.mjs";
 
 export const recoveryPolicy = {
@@ -238,6 +238,8 @@ export async function supervise({
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   process.umask(0o077);
   try {
+    assertPrivateState(state);
+    runtimeModel();
     await saveJson(join(state, "supervisor-process.json"), {
       pid: process.pid,
       at: new Date().toISOString(),
