@@ -13,6 +13,15 @@ reviewed service configuration elsewhere. Its default service identity supports
 one installation per macOS user. Do not run install/start/stop/resume against an
 existing installation merely to test the source checkout.
 
+The LaunchAgent reads the checkout's optional `.env` on each start, including
+`MUDFUT_MODEL` and `MUDFUT_PERSONA_STYLE_FILE`, like `pnpm start`. Its installed
+state directory and renewable authentication mode take precedence over `.env`.
+Existing LaunchAgents need a deliberate stop and reinstall to adopt changed
+startup arguments; updating source alone does not rewrite an installed service.
+Model and persona settings are used when creating an agent. An existing
+installation retains its saved agent, model and memory; editing `.env` does not
+switch that agent to another model or replace its persona.
+
 `pnpm bot:status` prints a JSON report from a read-only transaction over the
 existing pilot tables; it does not initialize an installation, contact Discord,
 call a model, or acquire the memory-writer lock. Each configured destination

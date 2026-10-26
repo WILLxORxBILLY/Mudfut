@@ -16,7 +16,7 @@ export const authFile = resolve(
     join(process.env.CODEX_HOME ?? join(homedir(), ".codex"), "auth.json"),
 );
 export const backend = join(state, "letta");
-export const model = configuredModel(process.env.MUDFUT_MODEL);
+export const runtimeModel = () => configuredModel(process.env.MUDFUT_MODEL);
 
 export function assertPrivateState(directory) {
   let ancestor = resolve(directory);
@@ -100,6 +100,7 @@ export async function prepareRuntime() {
 }
 
 export async function makeClient() {
+  runtimeModel();
   await prepareRuntime();
   const { LettaAgentClient } = await import("@letta-ai/letta-agent-sdk");
   return new LettaAgentClient({
