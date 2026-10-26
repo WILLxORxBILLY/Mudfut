@@ -149,7 +149,7 @@ test("archive status persistence errors remain visible instead of silently conti
   await idleReader.end();
 });
 
-test("partial channel polls retain independent read evidence without committing a cursor", async () => {
+test("endpoint read denials retain failed diagnostics while healthy channels continue", async () => {
   const saved = [];
   const recorder = channelPollStatus(
     config,
@@ -159,31 +159,94 @@ test("partial channel polls retain independent read evidence without committing 
     ],
     { save: async (s) => saved.push(s), now: () => now },
   );
-  const cursors = { [channelId]: "555555555555555500", [threadId]: "555555555555555500" };
+  const cursors = { [channelId]: "555555555555555500" };
+  const healthy = { id: "555555555555555501", channel_id: channelId };
   const denied = Object.assign(new Error("Forbidden"), { status: 403, code: 50013 });
-  await assert.rejects(
-    pollLiveChannels(
-      { meta: async () => ({ cursors }) },
-      {
-        after: async (id) => {
-          if (id === threadId) throw denied;
-          return [];
-        },
+  const store = { meta: async () => ({ cursors: { ...cursors } }) };
+  const poll = (discord, observe = async () => {}) =>
+    pollLiveChannels(store, discord, config, [channelId, threadId], observe);
+  const outcome = await poll(
+    {
+      after: async () => [healthy],
+      recent: async () => {
+        throw denied;
       },
-      config,
-      [channelId, threadId],
-      (results) =>
-        recorder.polled(
-          { channelIds: [channelId, threadId], threads: [{ id: threadId, parent_id: forumId }] },
-          results,
-        ),
-    ),
-    (error) => error === denied,
+    },
+    (results) =>
+      recorder.polled(
+        { channelIds: [channelId, threadId], threads: [{ id: threadId, parent_id: forumId }] },
+        results,
+      ),
   );
+  assert.deepEqual(outcome, { messages: [healthy], emptyChannelIds: [] });
   assert.equal(saved.length, 1);
   assert.equal(saved[0].polls[channelId].ok, true);
   assert.equal(saved[0].polls[threadId].ok, false);
   assert.equal(saved[0].polls[threadId].status, 403);
+  assert.equal(cursors[threadId], undefined, "a denied initial read cannot activate live replies");
+
+  for (const [status, code] of [
+    [403, 50001],
+    [404, 10003],
+  ]) {
+    const blocked = await poll({
+      after: async () => [healthy],
+      recent: async () => {
+        throw { status, code };
+      },
+    });
+    assert.deepEqual(blocked, outcome);
+  }
+  // A checkpoint's recovered read must not change the main cycle's captured outcome.
+  const recoveredEmpty = await poll({ after: async () => [], recent: async () => [] });
+  assert.deepEqual(recoveredEmpty.emptyChannelIds, [threadId]);
+  assert.deepEqual(outcome.emptyChannelIds, []);
+  const recovered = { ...healthy, id: "555555555555555502", channel_id: threadId };
+  const recoveredMessages = await poll({ after: async () => [], recent: async () => [recovered] });
+  assert.deepEqual(recoveredMessages, { messages: [recovered], emptyChannelIds: [] });
+
+  for (const failure of [
+    { status: 401, code: 50001 },
+    { status: 403 },
+    { status: 403, code: 50035 },
+    { status: 404, code: 10008 },
+    { status: 500, code: 50001 },
+    new Error("offline"),
+  ])
+    await assert.rejects(
+      poll({
+        after: async () => [],
+        recent: async () => {
+          throw failure;
+        },
+      }),
+      (error) => error === failure,
+    );
+  await assert.rejects(
+    poll({ after: async () => [recovered], recent: async () => [] }),
+    /different channel/,
+  );
+  await assert.rejects(poll({ after: async () => [], recent: async () => ({}) }), TypeError);
+  await assert.rejects(
+    poll({ after: async () => [], recent: async () => [] }, async () => {
+      throw denied;
+    }),
+    (error) => error === denied,
+  );
+  await assert.rejects(
+    pollLiveChannels(
+      {
+        meta: async () => {
+          throw denied;
+        },
+      },
+      {
+        after: async () => assert.fail("storage failure must precede any read"),
+      },
+      config,
+    ),
+    (error) => error === denied,
+  );
   assert.equal(cursors[channelId], "555555555555555500");
 });
 

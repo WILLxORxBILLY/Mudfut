@@ -719,7 +719,7 @@ test("live channels poll independent cursors and reject cross-channel responses"
       return channel === second ? [{ ...message(b), channel_id: second }] : [];
     },
   };
-  const messages = await pollLiveChannels(store, discord, scope);
+  const { messages } = await pollLiveChannels(store, discord, scope);
   assert.deepEqual(reads, [
     [config.channelId, c],
     [second, a],
@@ -767,6 +767,41 @@ test(
       store = await pilotStore(db, scope);
       assert.equal((await store.meta()).cursors[config.channelId], c);
       assert.equal((await store.meta()).cursors[second], undefined);
+      const deniedPoll = await pollLiveChannels(
+        store,
+        {
+          after: async () => [],
+          recent: async () => {
+            throw { status: 403, code: 50013 };
+          },
+        },
+        scope,
+        [config.channelId, second],
+      );
+      for (const id of deniedPoll.emptyChannelIds) await store.cursor("00000000000000000", id);
+      assert.equal((await store.meta()).cursors[second], undefined);
+      const recovered = {
+        ...message("555555555555555499", "<@444444444444444444> hello"),
+        channel_id: second,
+      };
+      const recovery = await pollLiveChannels(
+        store,
+        { after: async () => [], recent: async () => [recovered] },
+        scope,
+        [config.channelId, second],
+      );
+      const beforeRecovery = await store.meta();
+      for (const current of recovery.messages) {
+        const source = liveSource(current, scope);
+        assert.equal(await store.isAddressed(source, "444444444444444444", async () => null), true);
+        await store.ingest(source, Boolean(beforeRecovery.cursors[source.channelId]));
+        await store.cursor(source.id, source.channelId);
+      }
+      assert.equal(
+        (await store.next()).replyTo,
+        null,
+        "the first recovered page remains quiet catch-up",
+      );
       const olderThread = "222222222222222226";
       await store.registerThreads(
         [{ id: olderThread, parent_id: forum, guild_id: config.guildId, type: 11 }],
