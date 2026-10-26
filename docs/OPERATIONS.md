@@ -40,6 +40,12 @@ The worker stores poll metadata in private `channel-polls.json` and archive
 availability in `archive-status.json`. Runtime progress, route access and delivery
 are separate observations. `pnpm knowledge report` reports bounded knowledge state.
 
+An endpoint message read that reports Missing Access, Missing Permissions, or
+Unknown Channel leaves that channel's cursor unchanged while healthy channel
+polls continue. A channel without a cursor retains quiet initial catch-up when
+access returns. Other read errors and startup, discovery, source-validation,
+delivery, or local-state failures retain their existing recovery safeguards.
+
 An optional archive connection or query failure pauses that reader for the rest
 of the worker process. Background history remains unread and its saved cursors
 are retained; live polling and replies using available evidence continue. Archive

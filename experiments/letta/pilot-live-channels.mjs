@@ -14,12 +14,24 @@ export async function pollLiveChannels(
   observe = async () => {},
 ) {
   const { cursors } = await store.meta();
-  // Each read is independent; no progress is committed unless the entire poll succeeds.
+  // ponytail: isolate endpoint permission failures during polling only; startup,
+  // discovery, evidence validation and delivery remain fail-closed. Upgrade to an
+  // endpoint-aware scheduler before isolating those operations or adding backoff.
   const pages = await Promise.allSettled(
     channelIds.map(async (channelId) => {
-      const messages = cursors[channelId]
-        ? await discord.after(channelId, cursors[channelId])
-        : await discord.recent(channelId);
+      let messages;
+      try {
+        messages = cursors[channelId]
+          ? await discord.after(channelId, cursors[channelId])
+          : await discord.recent(channelId);
+      } catch (error) {
+        if (
+          (error?.status === 403 && [50001, 50013].includes(error.code)) ||
+          (error?.status === 404 && error.code === 10003)
+        )
+          return { messages: [], error, at: new Date().toISOString() };
+        throw error;
+      }
       if (messages.some((message) => message.channel_id !== channelId))
         throw new Error("Discord returned a message from a different channel");
       return { messages, at: new Date().toISOString() };
@@ -28,16 +40,26 @@ export async function pollLiveChannels(
   await observe(
     pages.map((page, index) => ({
       channelId: channelIds[index],
-      ok: page.status === "fulfilled",
+      ok: page.status === "fulfilled" && !page.value.error,
       at: page.value?.at ?? new Date().toISOString(),
-      ...(page.status === "rejected" ? { error: page.reason } : {}),
+      ...(page.status === "rejected"
+        ? { error: page.reason }
+        : page.value.error
+          ? { error: page.value.error }
+          : {}),
     })),
   );
   const failed = pages.find((page) => page.status === "rejected");
   if (failed) throw failed.reason;
-  return pages
-    .flatMap((page) => page.value.messages)
-    .sort((a, b) => (BigInt(a.id) < BigInt(b.id) ? -1 : 1));
+  return {
+    messages: pages
+      .flatMap((page) => page.value.messages)
+      .sort((a, b) => (BigInt(a.id) < BigInt(b.id) ? -1 : 1)),
+    emptyChannelIds: channelIds.filter(
+      (id, index) =>
+        !cursors[id] && !pages[index].value.error && !pages[index].value.messages.length,
+    ),
+  };
 }
 
 export async function liveChannelPlan(discord, config) {

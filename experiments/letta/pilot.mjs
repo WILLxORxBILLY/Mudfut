@@ -218,7 +218,7 @@ try {
       }
       await store.registerThreads(discovered.threads, channelPlan.forumIds);
       liveConfig = { ...config, liveChannelIds: discovered.channelIds };
-      const messages = await pollLiveChannels(
+      const outcome = await pollLiveChannels(
         store,
         discord,
         config,
@@ -226,8 +226,9 @@ try {
         (results) => polls.polled(discovered, results),
       );
       await pulse("live_poll_complete");
-      return messages;
+      return outcome;
     };
+    const pollMessages = async () => (await pollFresh()).messages;
     const isUrgent = async (messages) => {
       for (const message of messages)
         if (
@@ -238,7 +239,7 @@ try {
           return true;
       return false;
     };
-    const checkpoint = livePriorityCheckpoint({ poll: pollFresh, isUrgent });
+    const checkpoint = livePriorityCheckpoint({ poll: pollMessages, isUrgent });
     const learning = historyQueue(store, discord, config, state, record, history, {
       shouldYield: async () => {
         await checkpoint();
@@ -367,7 +368,8 @@ try {
         preempted = false;
       try {
         phase = "poll";
-        incoming = await timing.measure("poll", pollFresh);
+        const polled = await timing.measure("poll", pollFresh);
+        incoming = polled.messages;
         const meta = await store.meta();
         incoming = [
           ...new Map(
@@ -411,11 +413,10 @@ try {
           }
           await store.cursor(message.id, message.channel_id);
         }
-        for (const channelId of liveConfig.liveChannelIds) {
-          if (!meta.cursors[channelId] && !incoming.some((m) => m.channel_id === channelId))
-            // Zero is a lower bound, avoiding a local-clock cutoff that could skip messages.
-            await store.cursor("00000000000000000", channelId);
-        }
+        // Only this cycle's successful empty reads activate an uninitialized channel.
+        for (const channelId of polled.emptyChannelIds)
+          // Zero is a lower bound, avoiding a local-clock cutoff that could skip messages.
+          await store.cursor("00000000000000000", channelId);
         phase = "reconcile";
         // Detect and persist live work first; cold validation must not stand in front of a direct reply.
         const readyDelivery = (
@@ -503,7 +504,7 @@ try {
             };
             const result = !batch.replyTo
               ? await withLivePriority(generate, {
-                  poll: pollFresh,
+                  poll: pollMessages,
                   isUrgent,
                   abort: () => model.abort(),
                   record,
