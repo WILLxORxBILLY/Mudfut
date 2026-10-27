@@ -1,0 +1,48 @@
+diff --git a/dist/index.js b/dist/index.js
+--- a/dist/index.js
++++ b/dist/index.js
+@@ -27171,6 +27171,44 @@
+     }
+     return payload;
+   };
++  // ponytail: only declared leading array bounds; replace with an upstream rebuilt artifact.
++  // This is not an HTTP byte limit or a bound for unbounded/custom-leading schemas.
++  function capSize(inst, size) {
++      const caps = sizeCaps(inst._zod.def.checks);
++      if (!caps.length)
++          return;
++      const cap = Math.min(...caps.map((c) => c[0]));
++      const parse = inst._zod.parse;
++      inst._zod.parse = (payload, ctx) => {
++          const n = size(payload.value);
++          if (n > cap && !ctx?.skipChecks && ctx?.direction !== "backward") {
++              for (const [max, ch] of sizeCaps(inst._zod.def.checks)) {
++                  if (n > max && ch._zod.def.when(payload)) {
++                      const start = payload.issues.length;
++                      ch._zod.check(payload);
++                      // the value is still the raw input, so no later check may read it
++                      payload.issues[start].continue = false;
++                      return payload;
++                  }
++              }
++          }
++          return parse(payload, ctx);
++      };
++  }
++  function sizeCaps(defChecks) {
++      const caps = [];
++      for (const ch of defChecks ?? []) {
++          const d = ch._zod.def;
++          // a later check may rewrite the value
++          if (!/_(length|size)$|_equals$/.test(d.check))
++              break;
++          const max = d.maximum ?? d.length ?? d.size;
++          if (max >= 0)
++              caps.push([max, ch]);
++      }
++      return caps;
++  }
++  capSize(inst, input => Array.isArray(input) ? input.length : -1);
+ });
+ function handlePropertyResult(result, final, key, input, isOptionalIn, isOptionalOut) {
+   const isPresent = key in input;

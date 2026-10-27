@@ -22,6 +22,8 @@ export const hooks = {
       patchedDependencies: {
         ...config.patchedDependencies,
         "@letta-ai/letta-code@0.34.14": "patches/@letta-ai__letta-code@0.34.14.patch",
+        "@letta-ai/letta-agent-sdk@0.8.38": "patches/@letta-ai__letta-agent-sdk@0.8.38.patch",
+        "@letta-ai/letta-agent-sdk@0.8.44": "patches/@letta-ai__letta-agent-sdk@0.8.44.patch",
       },
     };
   },
