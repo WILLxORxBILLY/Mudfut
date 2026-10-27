@@ -17,6 +17,7 @@ import {
   startTyping,
   currentSources,
 } from "./pilot-discord.mjs";
+import { withLivePriority, livePriorityCheckpoint } from "./pilot-priority.mjs";
 import { retryableFailure } from "./pilot-supervisor.mjs";
 import { pollLiveChannels, liveSource, liveChannelPlan } from "./pilot-live-channels.mjs";
 import { timingTrace } from "./pilot-timing.mjs";
@@ -689,7 +690,7 @@ test("Discord GET timeouts retry within bounds and remain recoverable after exha
     ),
     (error) => {
       assert.equal(error.code, "ETIMEDOUT");
-      assert.equal(error.cause, aborted);
+      assert.equal(error.cause.cause, aborted);
       assert.equal(retryableFailure(error), true);
       return true;
     },
@@ -746,6 +747,137 @@ test("live channels poll independent cursors and reject cross-channel responses"
   assert.equal(meta.cursors[second], a, "failed polls never commit progress");
 });
 
+test("exhausted transient message reads preserve healthy live-priority polling and fail closed elsewhere", async () => {
+  const second = "222222222222222223";
+  const scope = { ...config, replyChannelIds: [config.channelId, second] };
+  const store = { meta: async () => ({ cursors: { [config.channelId]: a, [second]: a } }) };
+  const transient = [
+    ...["ECONNRESET", "ETIMEDOUT", "EAI_AGAIN", "UND_ERR_CONNECT_TIMEOUT", "UND_ERR_SOCKET"].map(
+      (code) => Object.assign(new Error("read failed"), { code }),
+    ),
+    ...[500, 502, 503, 504, 599].map((status) => ({ status })),
+  ];
+  for (const error of transient) {
+    let attempts = 0;
+    const observations = [];
+    const poll = async () =>
+      (
+        await pollLiveChannels(
+          store,
+          {
+            after: async (id) => {
+              if (id === second)
+                return retryRead(
+                  async () => {
+                    attempts++;
+                    throw error;
+                  },
+                  async () => {},
+                  async () => {},
+                );
+              return [message(b)];
+            },
+          },
+          scope,
+          undefined,
+          async (results) => observations.push(...results),
+        )
+      ).messages;
+    const checkpoint = livePriorityCheckpoint({ poll, isUrgent: async () => false });
+    assert.deepEqual(await checkpoint(), [message(b)]);
+    assert.equal(attempts, 3, "isolation adds no retry after transport exhaustion");
+    assert.deepEqual(
+      observations.map((result) => result.ok),
+      [true, false],
+    );
+    assert.equal(observations[1].error.cause, error);
+    let release;
+    const cancelled = new Promise((resolve) => {
+      release = resolve;
+    });
+    await assert.rejects(
+      withLivePriority(() => cancelled, {
+        poll,
+        isUrgent: async (messages) => messages.some((item) => item.id === b),
+        abort: async () => release(),
+      }),
+      (failure) => failure.code === "HISTORY_PREEMPTED" && failure.messages[0].id === b,
+    );
+  }
+  for (const error of [
+    { status: 401, code: "ETIMEDOUT" },
+    { status: 403, code: "UND_ERR_CONNECT_TIMEOUT" },
+    { status: 404, code: 10008 },
+    { status: 429 },
+    { code: "ETIMEDOUT" },
+    { status: 503 },
+    { code: "08006" },
+    new Error("unknown failure"),
+  ]) {
+    await assert.rejects(
+      pollLiveChannels(
+        store,
+        {
+          after: async () => {
+            throw error;
+          },
+        },
+        scope,
+      ),
+      (failure) => failure === error,
+    );
+  }
+  const storage = Object.assign(new Error("status save failed"), { code: "ETIMEDOUT" });
+  await assert.rejects(
+    pollLiveChannels(store, { after: async () => [message(b)] }, config, undefined, async () => {
+      throw storage;
+    }),
+    (failure) => failure === storage,
+  );
+  await assert.rejects(
+    pollLiveChannels(
+      {
+        meta: async () => {
+          throw storage;
+        },
+      },
+      {},
+      config,
+    ),
+    (failure) => failure === storage,
+  );
+  await assert.rejects(
+    pollLiveChannels(
+      store,
+      {
+        after: async () =>
+          retryRead(
+            async () => {
+              throw { status: 503 };
+            },
+            async () => {
+              throw storage;
+            },
+            async () => {},
+          ),
+      },
+      config,
+    ),
+    (failure) => failure === storage,
+  );
+  const forum = "222222222222222224";
+  const plan = await liveChannelPlan(
+    {
+      channel: async (id) => ({ id, guild_id: config.guildId, type: 15 }),
+      activeThreads: async () => {
+        throw transient[0];
+      },
+    },
+    { ...config, channelId: forum },
+  );
+  await assert.rejects(plan.discover(), (failure) => failure === transient[0]);
+});
+
 test(
   "multi-channel durable routing, context, restart and ambiguous delivery",
   { skip: process.env.CHECK_DATABASE !== "1" },
@@ -767,19 +899,31 @@ test(
       store = await pilotStore(db, scope);
       assert.equal((await store.meta()).cursors[config.channelId], c);
       assert.equal((await store.meta()).cursors[second], undefined);
-      const deniedPoll = await pollLiveChannels(
-        store,
-        {
-          after: async () => [],
-          recent: async () => {
-            throw { status: 403, code: 50013 };
+      for (const error of [
+        { status: 403, code: 50013 },
+        { code: "UND_ERR_CONNECT_TIMEOUT" },
+        { status: 503 },
+      ]) {
+        const failedPoll = await pollLiveChannels(
+          store,
+          {
+            after: async () => [],
+            recent: async () =>
+              retryRead(
+                async () => {
+                  throw error;
+                },
+                async () => {},
+                async () => {},
+              ),
           },
-        },
-        scope,
-        [config.channelId, second],
-      );
-      for (const id of deniedPoll.emptyChannelIds) await store.cursor("00000000000000000", id);
-      assert.equal((await store.meta()).cursors[second], undefined);
+          scope,
+          [config.channelId, second],
+        );
+        for (const id of failedPoll.emptyChannelIds) await store.cursor("00000000000000000", id);
+        assert.equal((await store.meta()).cursors[second], undefined);
+        assert.equal((await store.meta()).cursors[config.channelId], c);
+      }
       const recovered = {
         ...message("555555555555555499", "<@444444444444444444> hello"),
         channel_id: second,
