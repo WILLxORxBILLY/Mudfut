@@ -1,4 +1,5 @@
 import { replyChannels, sourceRecord } from "./pilot-store.mjs";
+import { DiscordReadUnavailable } from "./pilot-discord.mjs";
 
 export function liveSource(message, config) {
   if (!(config.liveChannelIds ?? replyChannels(config)).includes(message.channel_id))
@@ -14,7 +15,7 @@ export async function pollLiveChannels(
   observe = async () => {},
 ) {
   const { cursors } = await store.meta();
-  // ponytail: isolate endpoint permission failures during polling only; startup,
+  // ponytail: isolate permission and exhausted transient message reads only; startup,
   // discovery, evidence validation and delivery remain fail-closed. Upgrade to an
   // endpoint-aware scheduler before isolating those operations or adding backoff.
   const pages = await Promise.allSettled(
@@ -26,6 +27,7 @@ export async function pollLiveChannels(
           : await discord.recent(channelId);
       } catch (error) {
         if (
+          error instanceof DiscordReadUnavailable ||
           (error?.status === 403 && [50001, 50013].includes(error.code)) ||
           (error?.status === 404 && error.code === 10003)
         )

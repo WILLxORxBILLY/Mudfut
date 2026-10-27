@@ -2,21 +2,35 @@ import { REST, Routes } from "discord.js";
 import { sourceRecord, snowflake, digest, hasTextEvidence } from "./pilot-store.mjs";
 import { setTimeout as delay } from "node:timers/promises";
 
+function transientDiscordRead(error) {
+  if (error?.status != null)
+    return Number.isInteger(error.status) && error.status >= 500 && error.status <= 599;
+  return [
+    "ECONNRESET",
+    "ETIMEDOUT",
+    "EAI_AGAIN",
+    "UND_ERR_CONNECT_TIMEOUT",
+    "UND_ERR_SOCKET",
+  ].includes(error?.code);
+}
+
+// Only transport read exhaustion gets this marker; audit/storage failures propagate unchanged.
+export class DiscordReadUnavailable extends Error {
+  constructor(cause) {
+    super(cause.message ?? "Discord read unavailable", { cause });
+    this.name = "DiscordReadUnavailable";
+    this.code = cause.code;
+    this.status = cause.status;
+  }
+}
+
 export async function retryRead(read, record = async () => {}, pause = delay) {
   for (let attempt = 0; ; attempt++) {
     try {
       return await read();
     } catch (error) {
-      const transient =
-        (error.status >= 500 && error.status <= 599) ||
-        [
-          "ECONNRESET",
-          "ETIMEDOUT",
-          "EAI_AGAIN",
-          "UND_ERR_CONNECT_TIMEOUT",
-          "UND_ERR_SOCKET",
-        ].includes(error.code);
-      if (!transient || attempt === 2) throw error;
+      if (!transientDiscordRead(error)) throw error;
+      if (attempt === 2) throw new DiscordReadUnavailable(error);
       await record({
         type: "discord_read_retry",
         attempt: attempt + 1,
