@@ -18,6 +18,8 @@ export const hooks = {
         "@janhapke/sharp-electron": "npm:sharp@0.35.5",
         "brace-expansion@^2": "2.1.7",
         "brace-expansion@^5": "5.0.12",
+        "fast-uri@3.1.8": "3.1.9",
+        "qs@6.16.0": "6.16.1",
       },
       patchedDependencies: {
         ...config.patchedDependencies,
