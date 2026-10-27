@@ -46,6 +46,14 @@ function arrayConstructor(source) {
   });
 }
 
+function issueFinalizer(source) {
+  const start = source.indexOf("function unwrapMessage(message) {");
+  const end = source.indexOf("function getSizableOrigin(", start);
+  assert(start >= 0 && end > start, "Review issue serializer extraction after a package rebuild");
+  // These pure functions come from the same pinned artifact as its array constructor.
+  return Function(`${source.slice(start, end)}; return finalizeIssue;`)();
+}
+
 const files = [
   ...["letta.js", "dist/mcp-client.js", "dist/mcp-oauth.js"].map((file) => join(code, file)),
   join(sdk, "dist/index.js"),
@@ -60,6 +68,7 @@ for (const file of files) {
       "Both existing OAuth guards must remain in each Letta-code artifact",
     );
   const ArraySchema = arrayConstructor(source);
+  const finalizeIssue = issueFinalizer(source);
   for (const exact of [false, true]) {
     for (const async of [false, true]) {
       let visits = 0;
@@ -82,6 +91,46 @@ for (const file of files) {
       assert.equal(visits, 0, "Oversized bundle input visited child parsers: " + file);
       assert.equal(reads, 0, "Oversized bundle input read child values: " + file);
       assert(result.issues.some((issue) => issue.code === "too_big"));
+      const issue = result.issues.find((item) => item.code === "too_big");
+      const expected = {
+        origin: "array",
+        code: "too_big",
+        maximum: 2,
+        inclusive: true,
+        ...(exact ? { exact: true } : {}),
+        path: [],
+        message: "Invalid input",
+      };
+      assert.deepEqual(
+        finalizeIssue(issue, undefined, {}),
+        expected,
+        "Public issue leaked internal fields: " + file,
+      );
+      const ctx = { error: () => ({ message: "context limit" }) };
+      const config = { customError: () => "global limit", localeError: () => "locale limit" };
+      assert.deepEqual(finalizeIssue(issue, ctx, config), {
+        ...expected,
+        message: "context limit",
+      });
+      assert.deepEqual(finalizeIssue(issue, undefined, config), {
+        ...expected,
+        message: "global limit",
+      });
+      assert.deepEqual(finalizeIssue(issue, undefined, { localeError: config.localeError }), {
+        ...expected,
+        message: "locale limit",
+      });
+      check._zod.def.error = () => ({ message: "declared limit" });
+      assert.deepEqual(finalizeIssue(issue, ctx, config), {
+        ...expected,
+        message: "declared limit",
+      });
+      delete check._zod.def.error;
+      assert.deepEqual(finalizeIssue(issue, { reportInput: true }, {}), {
+        ...expected,
+        input: oversized,
+      });
+
       const valid = await schema._zod.run({ value: [1, 2], issues: [] }, { async });
       assert.equal(visits, 2);
       assert.equal(valid.issues.length, 0);
@@ -122,5 +171,5 @@ for (const kind of ["array", "set", "map"]) {
   }
 }
 console.log(
-  "PASS: five actual emitted bundles and installed array/set/map bounds; OAuth guards retained",
+  "PASS: five emitted bundles preserve bounds and finalized public errors; installed core bounds and OAuth guards retained",
 );
