@@ -1,52 +1,59 @@
-diff --git a/dist/mcp-client.js b/dist/mcp-client.js
-index 6fc88aba7a4531d5d16b7125f0cf3d644e2cf6a9..927a5e013a04cebbd8f709345fae33dcffc99b47 100644
---- a/dist/mcp-client.js
-+++ b/dist/mcp-client.js
-@@ -13701,6 +13701,9 @@ async function parseErrorResponse(input) {
-   }
- }
- async function auth(provider, options) {
-+  // ponytail: text pilot only; bundled pre-1.31 MCP OAuth is deliberately disabled.
-+  // Native subscription OAuth is separate. Remove only after a patched upstream bundle.
-+  throw new Error("MCP OAuth is disabled in this pilot build (CVE-2026-104850)");
-   try {
-     return await authInternal(provider, options);
-   } catch (error2) {
-@@ -14111,6 +14114,7 @@ async function refreshAuthorization(authorizationServerUrl, { metadata, clientIn
-   return { refresh_token: refreshToken, ...tokens };
- }
- async function fetchToken(provider, authorizationServerUrl, { metadata, resource, authorizationCode, fetchFn } = {}) {
-+  throw new Error("MCP OAuth is disabled in this pilot build (CVE-2026-104850)");
-   const scope = provider.clientMetadata.scope;
-   let tokenRequestParams;
-   if (provider.prepareTokenRequest) {
-diff --git a/dist/mcp-oauth.js b/dist/mcp-oauth.js
-index 41056a364bc63fc9956b3ab5a655bd87bff8fa63..01265633583cd796e9df4685e0e9ba3c7476e3e9 100644
---- a/dist/mcp-oauth.js
-+++ b/dist/mcp-oauth.js
-@@ -14226,6 +14226,9 @@ async function parseErrorResponse(input) {
-   }
- }
- async function auth(provider, options) {
-+  // ponytail: text pilot only; bundled pre-1.31 MCP OAuth is deliberately disabled.
-+  // Native subscription OAuth is separate. Remove only after a patched upstream bundle.
-+  throw new Error("MCP OAuth is disabled in this pilot build (CVE-2026-104850)");
-   try {
-     return await authInternal(provider, options);
-   } catch (error2) {
-@@ -14636,6 +14639,7 @@ async function refreshAuthorization(authorizationServerUrl, { metadata, clientIn
-   return { refresh_token: refreshToken, ...tokens };
- }
- async function fetchToken(provider, authorizationServerUrl, { metadata, resource, authorizationCode, fetchFn } = {}) {
-+  throw new Error("MCP OAuth is disabled in this pilot build (CVE-2026-104850)");
-   const scope = provider.clientMetadata.scope;
-   let tokenRequestParams;
-   if (provider.prepareTokenRequest) {
 diff --git a/letta.js b/letta.js
-index 08bfeecc8a1432dbfeeea476a3018c1171cb2b75..2aa812e1ce483a4dccd4bb44b351610896ce4523 100755
 --- a/letta.js
 +++ b/letta.js
-@@ -200554,6 +200554,9 @@ async function parseErrorResponse2(input) {
+@@ -196232,6 +196232,51 @@
+       }
+       return payload;
+     };
++    // ponytail: only declared leading array bounds; replace with an upstream rebuilt artifact.
++    // This is not an HTTP byte limit or a bound for unbounded/custom-leading schemas.
++    function capSize(inst, size) {
++        const caps = sizeCaps(inst._zod.def.checks);
++        if (!caps.length)
++            return;
++        const cap = Math.min(...caps.map((c) => c[0]));
++        const parse = inst._zod.parse;
++        inst._zod.parse = (payload, ctx) => {
++            const n = size(payload.value);
++            if (n > cap && !ctx?.skipChecks && ctx?.direction !== "backward") {
++                for (const [max, ch] of sizeCaps(inst._zod.def.checks)) {
++                    if (n > max && ch._zod.def.when(payload)) {
++                        const start = payload.issues.length;
++                        ch._zod.check(payload);
++                        // the value is still the raw input, so no later check may read it
++                        payload.issues[start].continue = false;
++                        attachSchema(payload.issues, start, inst);
++                        return payload;
++                    }
++                }
++            }
++            return parse(payload, ctx);
++        };
++    }
++    function sizeCaps(defChecks) {
++        const caps = [];
++        for (const ch of defChecks ?? []) {
++            const d = ch._zod.def;
++            // a later check may rewrite the value
++            if (!/_(length|size)$|_equals$/.test(d.check))
++                break;
++            const max = d.maximum ?? d.length ?? d.size;
++            if (max >= 0)
++                caps.push([max, ch]);
++        }
++        return caps;
++    }
++    function attachSchema(issues, start, inst) {
++        var _a;
++        for (let i = start; i < issues.length; i++) {
++            (_a = issues[i]).schema ?? (_a.schema = inst);
++        }
++    }
++    capSize(inst, input => Array.isArray(input) ? input.length : -1);
+   });
+   $ZodObject = /* @__PURE__ */ $constructor("$ZodObject", (inst, def) => {
+     $ZodType.init(inst, def);
+@@ -200555,6 +200600,9 @@
    }
  }
  async function auth(provider, options) {
@@ -56,8 +63,154 @@ index 08bfeecc8a1432dbfeeea476a3018c1171cb2b75..2aa812e1ce483a4dccd4bb44b3516108
    try {
      return await authInternal(provider, options);
    } catch (error5) {
-@@ -200964,6 +200967,7 @@ async function refreshAuthorization(authorizationServerUrl, { metadata, clientIn
+@@ -200965,6 +201013,7 @@
    return { refresh_token: refreshToken2, ...tokens };
+ }
+ async function fetchToken(provider, authorizationServerUrl, { metadata, resource, authorizationCode, fetchFn } = {}) {
++  throw new Error("MCP OAuth is disabled in this pilot build (CVE-2026-104850)");
+   const scope = provider.clientMetadata.scope;
+   let tokenRequestParams;
+   if (provider.prepareTokenRequest) {
+diff --git a/dist/mcp-client.js b/dist/mcp-client.js
+--- a/dist/mcp-client.js
++++ b/dist/mcp-client.js
+@@ -9203,6 +9203,51 @@
+     }
+     return payload;
+   };
++  // ponytail: only declared leading array bounds; replace with an upstream rebuilt artifact.
++  // This is not an HTTP byte limit or a bound for unbounded/custom-leading schemas.
++  function capSize(inst, size) {
++      const caps = sizeCaps(inst._zod.def.checks);
++      if (!caps.length)
++          return;
++      const cap = Math.min(...caps.map((c) => c[0]));
++      const parse = inst._zod.parse;
++      inst._zod.parse = (payload, ctx) => {
++          const n = size(payload.value);
++          if (n > cap && !ctx?.skipChecks && ctx?.direction !== "backward") {
++              for (const [max, ch] of sizeCaps(inst._zod.def.checks)) {
++                  if (n > max && ch._zod.def.when(payload)) {
++                      const start = payload.issues.length;
++                      ch._zod.check(payload);
++                      // the value is still the raw input, so no later check may read it
++                      payload.issues[start].continue = false;
++                      attachSchema(payload.issues, start, inst);
++                      return payload;
++                  }
++              }
++          }
++          return parse(payload, ctx);
++      };
++  }
++  function sizeCaps(defChecks) {
++      const caps = [];
++      for (const ch of defChecks ?? []) {
++          const d = ch._zod.def;
++          // a later check may rewrite the value
++          if (!/_(length|size)$|_equals$/.test(d.check))
++              break;
++          const max = d.maximum ?? d.length ?? d.size;
++          if (max >= 0)
++              caps.push([max, ch]);
++      }
++      return caps;
++  }
++  function attachSchema(issues, start, inst) {
++      var _a;
++      for (let i = start; i < issues.length; i++) {
++          (_a = issues[i]).schema ?? (_a.schema = inst);
++      }
++  }
++  capSize(inst, input => Array.isArray(input) ? input.length : -1);
+ });
+ function handlePropertyResult(result, final, key, input, isOptionalIn, isOptionalOut) {
+   const isPresent = key in input;
+@@ -13701,6 +13746,9 @@
+   }
+ }
+ async function auth(provider, options) {
++  // ponytail: text pilot only; bundled pre-1.31 MCP OAuth is deliberately disabled.
++  // Native subscription OAuth is separate. Remove only after a patched upstream bundle.
++  throw new Error("MCP OAuth is disabled in this pilot build (CVE-2026-104850)");
+   try {
+     return await authInternal(provider, options);
+   } catch (error2) {
+@@ -14111,6 +14159,7 @@
+   return { refresh_token: refreshToken, ...tokens };
+ }
+ async function fetchToken(provider, authorizationServerUrl, { metadata, resource, authorizationCode, fetchFn } = {}) {
++  throw new Error("MCP OAuth is disabled in this pilot build (CVE-2026-104850)");
+   const scope = provider.clientMetadata.scope;
+   let tokenRequestParams;
+   if (provider.prepareTokenRequest) {
+diff --git a/dist/mcp-oauth.js b/dist/mcp-oauth.js
+--- a/dist/mcp-oauth.js
++++ b/dist/mcp-oauth.js
+@@ -9728,6 +9728,51 @@
+     }
+     return payload;
+   };
++  // ponytail: only declared leading array bounds; replace with an upstream rebuilt artifact.
++  // This is not an HTTP byte limit or a bound for unbounded/custom-leading schemas.
++  function capSize(inst, size) {
++      const caps = sizeCaps(inst._zod.def.checks);
++      if (!caps.length)
++          return;
++      const cap = Math.min(...caps.map((c) => c[0]));
++      const parse = inst._zod.parse;
++      inst._zod.parse = (payload, ctx) => {
++          const n = size(payload.value);
++          if (n > cap && !ctx?.skipChecks && ctx?.direction !== "backward") {
++              for (const [max, ch] of sizeCaps(inst._zod.def.checks)) {
++                  if (n > max && ch._zod.def.when(payload)) {
++                      const start = payload.issues.length;
++                      ch._zod.check(payload);
++                      // the value is still the raw input, so no later check may read it
++                      payload.issues[start].continue = false;
++                      attachSchema(payload.issues, start, inst);
++                      return payload;
++                  }
++              }
++          }
++          return parse(payload, ctx);
++      };
++  }
++  function sizeCaps(defChecks) {
++      const caps = [];
++      for (const ch of defChecks ?? []) {
++          const d = ch._zod.def;
++          // a later check may rewrite the value
++          if (!/_(length|size)$|_equals$/.test(d.check))
++              break;
++          const max = d.maximum ?? d.length ?? d.size;
++          if (max >= 0)
++              caps.push([max, ch]);
++      }
++      return caps;
++  }
++  function attachSchema(issues, start, inst) {
++      var _a;
++      for (let i = start; i < issues.length; i++) {
++          (_a = issues[i]).schema ?? (_a.schema = inst);
++      }
++  }
++  capSize(inst, input => Array.isArray(input) ? input.length : -1);
+ });
+ function handlePropertyResult(result, final, key, input, isOptionalIn, isOptionalOut) {
+   const isPresent = key in input;
+@@ -14226,6 +14271,9 @@
+   }
+ }
+ async function auth(provider, options) {
++  // ponytail: text pilot only; bundled pre-1.31 MCP OAuth is deliberately disabled.
++  // Native subscription OAuth is separate. Remove only after a patched upstream bundle.
++  throw new Error("MCP OAuth is disabled in this pilot build (CVE-2026-104850)");
+   try {
+     return await authInternal(provider, options);
+   } catch (error2) {
+@@ -14636,6 +14684,7 @@
+   return { refresh_token: refreshToken, ...tokens };
  }
  async function fetchToken(provider, authorizationServerUrl, { metadata, resource, authorizationCode, fetchFn } = {}) {
 +  throw new Error("MCP OAuth is disabled in this pilot build (CVE-2026-104850)");

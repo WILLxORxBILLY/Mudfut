@@ -17,26 +17,31 @@ overrides:
   brace-expansion@^2: 2.1.7
   brace-expansion@^5: 5.0.12
 
-pnpmfileChecksum: sha256-+GTNtXmqzia4S8nKpLSbalHmzAZFJqJE3Urb2VJkgR4=
+pnpmfileChecksum: sha256-FJCdcbcDZrBF9qwskDGUSmSdcwO1tcSga287kELIm1I=
 
 patchedDependencies:
-  "@letta-ai/letta-code@0.34.14": 229abe3be7a2d2e85c71ad2a367de532338e4cbc79459f0a98c73de14c61ede2
+  "@letta-ai/letta-agent-sdk@0.8.38": 0f13e310357797a6c1cb351b87b3eac2a141c873f2388900e1c30d69c0d38649
+  "@letta-ai/letta-agent-sdk@0.8.44": 6575c0b74e2ff8cc20b3ec062208e3e592b712bf6e6e9bcfc7f00565b83f26a0
+  "@letta-ai/letta-code@0.34.14": c22fd225532ad30341610ce4ae3c2a38df5a64f94265b4d0fb3641d33dc20380
 
 importers:
   .:
     dependencies:
       "@letta-ai/letta-agent-sdk":
         specifier: 0.8.44
-        version: 0.8.44(@letta-ai/letta-code@0.34.14(patch_hash=229abe3be7a2d2e85c71ad2a367de532338e4cbc79459f0a98c73de14c61ede2)(@aws-sdk/credential-provider-node@3.972.86)(@smithy/signature-v4@5.7.4)(@types/node@22.20.1)(react-dom@19.3.1(react@18.2.0))(supports-color@7.2.0)(undici@8.12.2)(zod@3.25.76))
+        version: 0.8.44(patch_hash=6575c0b74e2ff8cc20b3ec062208e3e592b712bf6e6e9bcfc7f00565b83f26a0)(@letta-ai/letta-code@0.34.14(patch_hash=c22fd225532ad30341610ce4ae3c2a38df5a64f94265b4d0fb3641d33dc20380)(@aws-sdk/credential-provider-node@3.972.86)(@smithy/signature-v4@5.7.4)(@types/node@22.20.1)(react-dom@19.3.1(react@18.2.0))(supports-color@7.2.0)(undici@8.12.2)(zod@4.6.7))
       "@letta-ai/letta-code":
         specifier: 0.34.14
-        version: 0.34.14(patch_hash=229abe3be7a2d2e85c71ad2a367de532338e4cbc79459f0a98c73de14c61ede2)(@aws-sdk/credential-provider-node@3.972.86)(@smithy/signature-v4@5.7.4)(@types/node@22.20.1)(react-dom@19.3.1(react@18.2.0))(supports-color@7.2.0)(undici@8.12.2)(zod@3.25.76)
+        version: 0.34.14(patch_hash=c22fd225532ad30341610ce4ae3c2a38df5a64f94265b4d0fb3641d33dc20380)(@aws-sdk/credential-provider-node@3.972.86)(@smithy/signature-v4@5.7.4)(@types/node@22.20.1)(react-dom@19.3.1(react@18.2.0))(supports-color@7.2.0)(undici@8.12.2)(zod@4.6.7)
       discord.js:
         specifier: 14.27.0
         version: 14.27.0
       pg:
         specifier: 8.22.0
         version: 8.22.0
+      zod:
+        specifier: 4.6.7
+        version: 4.6.7
     devDependencies:
       prettier:
         specifier: 3.9.5
@@ -1558,6 +1563,11 @@ packages:
       {
         integrity: sha512-8iUql50EUR+uUcdRQ3HDqa6EVyo3docL8g5WJ3FNcWmu62IbkGUue/pEyLBW8VGKKucTPgqeks4fIU1DA4yowQ==,
       }
+    peerDependencies:
+      ajv: ^8.0.0
+    peerDependenciesMeta:
+      ajv:
+        optional: true
 
   ajv@8.20.0:
     resolution:
@@ -3635,10 +3645,10 @@ packages:
     peerDependencies:
       zod: ^3.25.28 || ^4
 
-  zod@3.25.76:
+  zod@4.6.7:
     resolution:
       {
-        integrity: sha512-gzUt/qt81nXsFGKIFcC3YnfEAx5NkunCfnDlvuBSSFS02bcXu4Lmea0AFIUwbLWxWPx3d9p8S5QoaujKcNQxcQ==,
+        integrity: sha512-g8W2D2kU6a8untc053fX1uVBKzM7yqAxW/3zwk83+6RyF2+SKOuV+c0wBDhUwzV1PaGapmZH+rmcUzPf+3CGwg==,
       }
 
   zwitch@2.0.4:
@@ -3653,12 +3663,12 @@ snapshots:
       ansi-styles: 6.2.3
       is-fullwidth-code-point: 4.0.0
 
-  "@anthropic-ai/sdk@0.124.0(zod@3.25.76)":
+  "@anthropic-ai/sdk@0.124.0(zod@4.6.7)":
     dependencies:
       json-schema-to-ts: 3.1.1
       standardwebhooks: 1.1.1
     optionalDependencies:
-      zod: 3.25.76
+      zod: 4.6.7
 
   "@aws-sdk/client-bedrock-runtime@3.1127.0":
     dependencies:
@@ -3893,16 +3903,16 @@ snapshots:
       - bufferutil
       - utf-8-validate
 
-  "@earendil-works/pi-ai@0.99.2(@aws-sdk/credential-provider-node@3.972.86)(@modelcontextprotocol/sdk@1.32.0(supports-color@7.2.0)(zod@3.25.76))(@smithy/signature-v4@5.7.4)(supports-color@7.2.0)(undici@8.12.2)(ws@8.21.0)(zod@3.25.76)":
+  "@earendil-works/pi-ai@0.99.2(@aws-sdk/credential-provider-node@3.972.86)(@modelcontextprotocol/sdk@1.32.0(supports-color@7.2.0)(zod@4.6.7))(@smithy/signature-v4@5.7.4)(supports-color@7.2.0)(undici@8.12.2)(ws@8.21.0)(zod@4.6.7)":
     dependencies:
-      "@anthropic-ai/sdk": 0.124.0(zod@3.25.76)
+      "@anthropic-ai/sdk": 0.124.0(zod@4.6.7)
       "@aws-sdk/client-bedrock-runtime": 3.1127.0
       "@earendil-works/pi-telemetry": 0.99.2
-      "@google/genai": 2.21.0(@modelcontextprotocol/sdk@1.32.0(supports-color@7.2.0)(zod@3.25.76))(supports-color@7.2.0)
+      "@google/genai": 2.21.0(@modelcontextprotocol/sdk@1.32.0(supports-color@7.2.0)(zod@4.6.7))(supports-color@7.2.0)
       "@smithy/node-http-handler": 4.12.1
       http-proxy-agent: 9.1.0(supports-color@7.2.0)
       https-proxy-agent: 9.1.0(supports-color@7.2.0)
-      openai: 7.19.0(@aws-sdk/credential-provider-node@3.972.86)(@smithy/signature-v4@5.7.4)(undici@8.12.2)(ws@8.21.0)(zod@3.25.76)
+      openai: 7.19.0(@aws-sdk/credential-provider-node@3.972.86)(@smithy/signature-v4@5.7.4)(undici@8.12.2)(ws@8.21.0)(zod@4.6.7)
       partial-json: 0.1.7
       typebox: 1.3.27
     transitivePeerDependencies:
@@ -4003,14 +4013,14 @@ snapshots:
   "@esbuild/win32-x64@0.28.1":
     optional: true
 
-  "@google/genai@2.21.0(@modelcontextprotocol/sdk@1.32.0(supports-color@7.2.0)(zod@3.25.76))(supports-color@7.2.0)":
+  "@google/genai@2.21.0(@modelcontextprotocol/sdk@1.32.0(supports-color@7.2.0)(zod@4.6.7))(supports-color@7.2.0)":
     dependencies:
       google-auth-library: 10.9.1(supports-color@7.2.0)
       p-retry: 4.6.2
       protobufjs: 7.6.5
       ws: 8.21.0
     optionalDependencies:
-      "@modelcontextprotocol/sdk": 1.32.0(supports-color@7.2.0)(zod@3.25.76)
+      "@modelcontextprotocol/sdk": 1.32.0(supports-color@7.2.0)(zod@4.6.7)
     transitivePeerDependencies:
       - bufferutil
       - supports-color
@@ -4128,28 +4138,28 @@ snapshots:
 
   "@jridgewell/sourcemap-codec@1.5.5": {}
 
-  "@letta-ai/letta-agent-sdk@0.8.38(@letta-ai/letta-code@0.34.14(patch_hash=229abe3be7a2d2e85c71ad2a367de532338e4cbc79459f0a98c73de14c61ede2)(@aws-sdk/credential-provider-node@3.972.86)(@smithy/signature-v4@5.7.4)(@types/node@22.20.1)(react-dom@19.3.1(react@18.2.0))(supports-color@7.2.0)(undici@8.12.2)(zod@3.25.76))":
+  "@letta-ai/letta-agent-sdk@0.8.38(patch_hash=0f13e310357797a6c1cb351b87b3eac2a141c873f2388900e1c30d69c0d38649)(@letta-ai/letta-code@0.34.14(patch_hash=c22fd225532ad30341610ce4ae3c2a38df5a64f94265b4d0fb3641d33dc20380)(@aws-sdk/credential-provider-node@3.972.86)(@smithy/signature-v4@5.7.4)(@types/node@22.20.1)(react-dom@19.3.1(react@18.2.0))(supports-color@7.2.0)(undici@8.12.2)(zod@4.6.7))":
     dependencies:
       "@letta-ai/letta-client": 1.12.1
-      "@letta-ai/letta-code": 0.34.14(patch_hash=229abe3be7a2d2e85c71ad2a367de532338e4cbc79459f0a98c73de14c61ede2)(@aws-sdk/credential-provider-node@3.972.86)(@smithy/signature-v4@5.7.4)(@types/node@22.20.1)(react-dom@19.3.1(react@18.2.0))(supports-color@7.2.0)(undici@8.12.2)(zod@3.25.76)
+      "@letta-ai/letta-code": 0.34.14(patch_hash=c22fd225532ad30341610ce4ae3c2a38df5a64f94265b4d0fb3641d33dc20380)(@aws-sdk/credential-provider-node@3.972.86)(@smithy/signature-v4@5.7.4)(@types/node@22.20.1)(react-dom@19.3.1(react@18.2.0))(supports-color@7.2.0)(undici@8.12.2)(zod@4.6.7)
       ajv: 8.20.0
 
-  "@letta-ai/letta-agent-sdk@0.8.44(@letta-ai/letta-code@0.34.14(patch_hash=229abe3be7a2d2e85c71ad2a367de532338e4cbc79459f0a98c73de14c61ede2)(@aws-sdk/credential-provider-node@3.972.86)(@smithy/signature-v4@5.7.4)(@types/node@22.20.1)(react-dom@19.3.1(react@18.2.0))(supports-color@7.2.0)(undici@8.12.2)(zod@3.25.76))":
+  "@letta-ai/letta-agent-sdk@0.8.44(patch_hash=6575c0b74e2ff8cc20b3ec062208e3e592b712bf6e6e9bcfc7f00565b83f26a0)(@letta-ai/letta-code@0.34.14(patch_hash=c22fd225532ad30341610ce4ae3c2a38df5a64f94265b4d0fb3641d33dc20380)(@aws-sdk/credential-provider-node@3.972.86)(@smithy/signature-v4@5.7.4)(@types/node@22.20.1)(react-dom@19.3.1(react@18.2.0))(supports-color@7.2.0)(undici@8.12.2)(zod@4.6.7))":
     dependencies:
       "@letta-ai/letta-client": 1.12.1
-      "@letta-ai/letta-code": 0.34.14(patch_hash=229abe3be7a2d2e85c71ad2a367de532338e4cbc79459f0a98c73de14c61ede2)(@aws-sdk/credential-provider-node@3.972.86)(@smithy/signature-v4@5.7.4)(@types/node@22.20.1)(react-dom@19.3.1(react@18.2.0))(supports-color@7.2.0)(undici@8.12.2)(zod@3.25.76)
+      "@letta-ai/letta-code": 0.34.14(patch_hash=c22fd225532ad30341610ce4ae3c2a38df5a64f94265b4d0fb3641d33dc20380)(@aws-sdk/credential-provider-node@3.972.86)(@smithy/signature-v4@5.7.4)(@types/node@22.20.1)(react-dom@19.3.1(react@18.2.0))(supports-color@7.2.0)(undici@8.12.2)(zod@4.6.7)
       ajv: 8.20.0
 
   "@letta-ai/letta-client@1.12.1": {}
 
-  "@letta-ai/letta-code@0.34.14(patch_hash=229abe3be7a2d2e85c71ad2a367de532338e4cbc79459f0a98c73de14c61ede2)(@aws-sdk/credential-provider-node@3.972.86)(@smithy/signature-v4@5.7.4)(@types/node@22.20.1)(react-dom@19.3.1(react@18.2.0))(supports-color@7.2.0)(undici@8.12.2)(zod@3.25.76)":
+  "@letta-ai/letta-code@0.34.14(patch_hash=c22fd225532ad30341610ce4ae3c2a38df5a64f94265b4d0fb3641d33dc20380)(@aws-sdk/credential-provider-node@3.972.86)(@smithy/signature-v4@5.7.4)(@types/node@22.20.1)(react-dom@19.3.1(react@18.2.0))(supports-color@7.2.0)(undici@8.12.2)(zod@4.6.7)":
     dependencies:
-      "@earendil-works/pi-ai": 0.99.2(@aws-sdk/credential-provider-node@3.972.86)(@modelcontextprotocol/sdk@1.32.0(supports-color@7.2.0)(zod@3.25.76))(@smithy/signature-v4@5.7.4)(supports-color@7.2.0)(undici@8.12.2)(ws@8.21.0)(zod@3.25.76)
+      "@earendil-works/pi-ai": 0.99.2(@aws-sdk/credential-provider-node@3.972.86)(@modelcontextprotocol/sdk@1.32.0(supports-color@7.2.0)(zod@4.6.7))(@smithy/signature-v4@5.7.4)(supports-color@7.2.0)(undici@8.12.2)(ws@8.21.0)(zod@4.6.7)
       "@janhapke/sharp-electron": sharp@0.35.5(@types/node@22.20.1)
-      "@letta-ai/letta-agent-sdk": 0.8.38(@letta-ai/letta-code@0.34.14(patch_hash=229abe3be7a2d2e85c71ad2a367de532338e4cbc79459f0a98c73de14c61ede2)(@aws-sdk/credential-provider-node@3.972.86)(@smithy/signature-v4@5.7.4)(@types/node@22.20.1)(react-dom@19.3.1(react@18.2.0))(supports-color@7.2.0)(undici@8.12.2)(zod@3.25.76))
+      "@letta-ai/letta-agent-sdk": 0.8.38(patch_hash=0f13e310357797a6c1cb351b87b3eac2a141c873f2388900e1c30d69c0d38649)(@letta-ai/letta-code@0.34.14(patch_hash=c22fd225532ad30341610ce4ae3c2a38df5a64f94265b4d0fb3641d33dc20380)(@aws-sdk/credential-provider-node@3.972.86)(@smithy/signature-v4@5.7.4)(@types/node@22.20.1)(react-dom@19.3.1(react@18.2.0))(supports-color@7.2.0)(undici@8.12.2)(zod@4.6.7))
       "@letta-ai/letta-client": 1.12.1
       "@letta-ai/trajectory": 0.2.0
-      "@modelcontextprotocol/sdk": 1.32.0(supports-color@7.2.0)(zod@3.25.76)
+      "@modelcontextprotocol/sdk": 1.32.0(supports-color@7.2.0)(zod@4.6.7)
       "@pierre/diffs": 1.2.2(react-dom@19.3.1(react@18.2.0))(react@18.2.0)
       "@scarf/scarf": 1.4.0
       "@shikijs/langs": 4.0.2
@@ -4185,7 +4195,7 @@ snapshots:
 
   "@letta-ai/trajectory@0.2.0": {}
 
-  "@modelcontextprotocol/sdk@1.32.0(supports-color@7.2.0)(zod@3.25.76)":
+  "@modelcontextprotocol/sdk@1.32.0(supports-color@7.2.0)(zod@4.6.7)":
     dependencies:
       "@hono/node-server": 2.1.5(hono@4.13.13)
       ajv: 8.20.0
@@ -4202,8 +4212,8 @@ snapshots:
       json-schema-typed: 8.0.2
       pkce-challenge: 5.0.1
       raw-body: 3.0.2
-      zod: 3.25.76
-      zod-to-json-schema: 3.25.2(zod@3.25.76)
+      zod: 4.6.7
+      zod-to-json-schema: 3.25.2(zod@4.6.7)
     transitivePeerDependencies:
       - supports-color
 
@@ -5264,13 +5274,13 @@ snapshots:
       is-inside-container: 1.0.0
       wsl-utils: 0.1.0
 
-  openai@7.19.0(@aws-sdk/credential-provider-node@3.972.86)(@smithy/signature-v4@5.7.4)(undici@8.12.2)(ws@8.21.0)(zod@3.25.76):
+  openai@7.19.0(@aws-sdk/credential-provider-node@3.972.86)(@smithy/signature-v4@5.7.4)(undici@8.12.2)(ws@8.21.0)(zod@4.6.7):
     optionalDependencies:
       "@aws-sdk/credential-provider-node": 3.972.86
       "@smithy/signature-v4": 5.7.4
       undici: 8.12.2
       ws: 8.21.0
-      zod: 3.25.76
+      zod: 4.6.7
 
   p-retry@4.6.2:
     dependencies:
@@ -5833,10 +5843,10 @@ snapshots:
 
   yoga-layout@3.2.1: {}
 
-  zod-to-json-schema@3.25.2(zod@3.25.76):
+  zod-to-json-schema@3.25.2(zod@4.6.7):
     dependencies:
-      zod: 3.25.76
+      zod: 4.6.7
 
-  zod@3.25.76: {}
+  zod@4.6.7: {}
 
   zwitch@2.0.4: {}

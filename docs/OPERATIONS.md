@@ -73,6 +73,17 @@ ChatGPT provider renewal is separate. The sharp-electron dependency resolves to
 patched sharp for this Node-only application. Electron embedding is unsupported.
 Retain these protections until a verified upstream upgrade replaces them.
 
+The explicit Zod 4.6.7 dependency selects compatible declared peers. Reproducible
+patches also bound array parsing in five installed Letta bundles: three CLI
+artifacts and both SDK versions. They reject oversized inputs before reading
+children only for declared leading upper bounds. Unbounded arrays, custom checks
+before a bound and overall input bytes remain outside this patch. Embedded 4.4.3
+version markers remain intact. Root Zod v3 compatibility remains callable if an
+external caller supplies a v3 schema; this change makes no full CVE-remediation or
+live-runtime claim. Replace these patches with verified upstream rebuilt artifacts.
+`node experiments/letta/bundled-array-bounds.test.mjs` checks the actual installed
+constructors offline without importing Letta executables or calling a provider.
+
 The pinned upstream CLI currently reports React peer-version warnings for its
 terminal UI dependencies. This release uses its headless local SDK path and does
 not claim support for embedding that terminal UI or Electron. The headless fixture
