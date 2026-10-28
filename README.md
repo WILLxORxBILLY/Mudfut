@@ -8,6 +8,10 @@ This is an early release of the current Letta runtime. It contains no community
 history, learned memories, credentials or operator configuration. The older
 production gateway and its deployment machinery are outside this release.
 
+This repository is the canonical source for native bot features. The separate
+private `WILLxORxBILLY/new-western` repository owns legacy Fly archive work;
+the two repositories have independent release lanes.
+
 ## Install
 
 Use Node 22, pnpm 11.28.7 and PostgreSQL 16. Clone the repository and install the
