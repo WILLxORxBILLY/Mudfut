@@ -1,3 +1,8 @@
+import {
+  generationFailureSchema,
+  generationReady,
+  generationAttempts,
+} from "./pilot-generation-failures.mjs";
 import { createHash, randomUUID } from "node:crypto";
 
 export const digest = (value) => createHash("sha256").update(value).digest("hex");
@@ -152,6 +157,7 @@ export async function pilotStore(db, config) {
   );
   const { historyFailureSchema } = await import("./pilot-history-failures.mjs");
   await db.query(historyFailureSchema);
+  await db.query(generationFailureSchema);
   await db.query("INSERT INTO pilot_meta(id,scope) VALUES(true,$1) ON CONFLICT DO NOTHING", [
     config,
   ]);
@@ -297,7 +303,8 @@ export async function pilotStore(db, config) {
   async function next() {
     const direct = (
       await db.query(
-        `SELECT s.* FROM pilot_sources s WHERE NOT deleted AND addressed AND learnable
+        `SELECT s.*, ${generationAttempts} FROM pilot_sources s WHERE NOT deleted AND addressed AND learnable
+        AND ${generationReady}
         AND source->>'guildId'=$1 AND (source->>'channelId'=ANY($2::text[])
           OR EXISTS(SELECT 1 FROM pilot_live_threads t WHERE t.channel_id=source->>'channelId'
             AND t.guild_id=$1 AND t.parent_id=ANY($2::text[])))
@@ -310,7 +317,8 @@ export async function pilotStore(db, config) {
     if (direct) return { rows: [direct], replyTo: direct.id };
     const rows = (
       await db.query(
-        `SELECT s.* FROM pilot_sources s WHERE NOT deleted AND NOT learned AND learnable
+        `SELECT s.*, ${generationAttempts} FROM pilot_sources s WHERE NOT deleted AND NOT learned AND learnable
+         AND ${generationReady}
          AND NOT EXISTS(SELECT 1 FROM pilot_source_holds h WHERE h.source_id=s.id)
          ORDER BY id::numeric LIMIT 12`,
       )

@@ -73,6 +73,12 @@ export function turnInput(batch, revision, botId) {
     memoryContract: {
       revision,
       observationTargetIds: targets,
+      ...(batch.rows.some((row) => row.generation_failures > 0)
+        ? {
+            repairInstruction:
+              "A prior attempt ended without complete observation decisions and committed nothing. Before finishing, call update_memory with an explicit retained/irrelevant decision for every observationTargetId, even when upsert and remove are empty. Repair validation errors; do not declare useful evidence irrelevant just to finish. The original messages remain authoritative.",
+          }
+        : {}),
       contextOnlyIds: [...supplied].filter((id) => !targets.includes(id)),
       instruction:
         "Only observationTargetIds need retained/irrelevant decisions. Context-only messages are surrounding evidence, not extra targets. Preserve valid proposals while repairing other errors. Read memory before changing it. Consolidate the same person/topic across episodes through explicit lineage; preserve changed views, dates, prior source lineage and contrary perspectives. Use provisional useful inferences naturally without turning them into facts. Notice recurring participation patterns, shared experiences and linked playful replies in surrounding or retrieved originals as well as targets. Retain useful social context and running jokes with exact source attribution; distinguish humorous self-description from a measured habit or promise. A tentative relationship inference needs direct linked exchanges and importance 1; warmth alone does not establish private friendship. Each substantive clause of a retained or consolidated statement needs its own supporting original in that entry's evidence, including inherited clauses. Add the actual source rather than borrowing support from a separate entry; split independent claims when needed. Do not auto-retain every archive hit. For lineage action extend, copy statement, kind and subjects exactly; changed wording needs revise with newer evidence. Do not merge unrelated topics that share a word." +
