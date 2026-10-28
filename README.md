@@ -14,7 +14,7 @@ Use Node 22, pnpm 11.28.7 and PostgreSQL 16. Clone the repository and install th
 locked dependencies:
 
 ```sh
-git clone https://github.com/canonicledaddy/Mudfut.git
+git clone https://github.com/WILLxORxBILLY/Mudfut.git
 cd Mudfut
 corepack enable
 pnpm install --frozen-lockfile
