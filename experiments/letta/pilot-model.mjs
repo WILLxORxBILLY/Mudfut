@@ -1,3 +1,4 @@
+import { requireObservationDecisions } from "./pilot-generation-failures.mjs";
 import { readFile, appendFile, mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
@@ -725,8 +726,7 @@ export async function pilotModel(
         await timing.measure("tools_drain", () => toolBoundary.finish());
         cancellation.check();
         if (!result?.success) throw new Error(result?.error ?? "No successful model result");
-        if (!repair.complete)
-          throw new Error("Model omitted explicit observation decisions; work remains unlearned");
+        requireObservationDecisions(repair.complete);
         const reply = expectsReply
           ? await formatReply(result.result?.trim(), {
               evidenceWarnings: provenance
@@ -814,7 +814,8 @@ export async function pilotModel(
         } catch (error) {
           cleanupError ??= error;
         }
-        if (!turnError && cleanupError) throw cleanupError;
+        if (cleanupError && (!turnError || turnError.code === "MODEL_OBSERVATIONS_INCOMPLETE"))
+          throw cleanupError;
       }
     },
     abort: async (reason) => {

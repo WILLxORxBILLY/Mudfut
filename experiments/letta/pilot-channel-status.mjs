@@ -1,3 +1,4 @@
+import { generationFailureStatus } from "./pilot-generation-failures.mjs";
 import { replyChannels, validateScope } from "./pilot-store.mjs";
 
 const errorCode = (error) => ({
@@ -131,6 +132,9 @@ export async function channelStatus(
     report.attention = report.unassignedDeliveries.some((row) => row.status !== "sent")
       ? ["unassigned-delivery-requires-inspection"]
       : [];
+    report.generationFailures = await generationFailureStatus(db);
+    if (report.generationFailures.some((row) => row.held))
+      report.attention.push("live-generation-held-requires-inspection");
     const counts = (
       await db.query(
         `SELECT s.source->>'channelId' AS channel_id,

@@ -1,3 +1,4 @@
+import { incompleteLiveTurn, deferGeneration } from "./pilot-generation-failures.mjs";
 import pg from "pg";
 import { readFile, lstat, rm } from "node:fs/promises";
 import { join } from "node:path";
@@ -558,7 +559,11 @@ try {
           stopTyping();
         }
       } catch (error) {
-        if (error.code === "HISTORY_PREEMPTED") {
+        if (incompleteLiveTurn(error, { batch, phase, stopping, connectionFailure })) {
+          const failures = await deferGeneration(store, batch);
+          await record({ type: "live_generation_deferred", failures, error: safeError(error) });
+          await pulse("live_generation_deferred");
+        } else if (error.code === "HISTORY_PREEMPTED") {
           for (const message of error.messages) bufferedIncoming.set(message.id, message);
           preempted = true;
           await record({

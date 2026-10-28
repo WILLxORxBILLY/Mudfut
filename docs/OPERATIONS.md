@@ -157,3 +157,24 @@ viewer intentionally refuses oversized input instead of silently truncating it.
 `node experiments/letta/coverage-inspector.test.mjs` is the focused assert-based
 selfcheck for invalid metadata, tier confusion, XSS serialization and CSP hashes.
 It contains inline canaries only and does not read operator state.
+
+## Incomplete observation decisions
+
+A successful model result must still include valid explicit memory decisions for every
+input target. Missing decisions never mark sources learned or create an outbox reply.
+Live turns now retain a PostgreSQL retry receipt for each exact source revision,
+wait 30 seconds after the first incomplete attempt and two minutes after the second,
+and supply an explicit repair instruction on retry. Other messages continue normally.
+After three incomplete attempts that revision is held for inspection rather than
+restarting the whole worker or retrying forever. `pnpm bot:status` lists
+`generationFailures` and adds `live-generation-held-requires-inspection` to `attention`.
+The original message stays unlearned. A real source edit gets a new revision budget;
+restarting the worker does not reset it. Do not edit a source or erase a failure receipt
+to bypass a hold. Diagnose the model/tool failure before an operator-approved retry.
+
+The additive `pilot_generation_failures` table stores only source identifiers, source
+hashes, counts and timestamps. Existing memory, revisions, work and delivery receipts
+are preserved. Old releases ignore this table but also lack its failure isolation;
+rolling back restores the previous restart behavior. Authentication, database,
+source-validation, cleanup and delivery errors retain their existing safety handling.
+Historical and operator work retain their existing independent retry policies.

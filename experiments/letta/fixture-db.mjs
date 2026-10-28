@@ -127,6 +127,7 @@ try {
       "archive-recall.test.mjs",
       "history-automation.test.mjs",
       "history-retries.test.mjs",
+      "generation-failures.test.mjs",
       "live-priority.test.mjs",
       "memory-postgres.test.mjs",
       "chronology-check.test.mjs",
