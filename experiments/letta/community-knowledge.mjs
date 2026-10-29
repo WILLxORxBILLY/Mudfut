@@ -28,6 +28,29 @@ const stable = (value) => {
     .join(",")}}`;
 };
 const sha256 = (value) => createHash("sha256").update(stable(value), "utf8").digest("hex");
+const sourceQuotesMatch = (candidate, sources) =>
+  (candidate.sourceQuotes ?? []).every((quote) =>
+    sources.get(quote.sourceId)?.source.content.includes(quote.quote),
+  );
+const viewQuotesMatch = (document) =>
+  Array.isArray(document?.entries) &&
+  document.entries.every(
+    (entry) =>
+      entry &&
+      Array.isArray(entry.sources) &&
+      (entry.contextSources === undefined || Array.isArray(entry.contextSources)) &&
+      [...entry.sources, ...(entry.contextSources ?? [])].every(
+        (source) =>
+          source &&
+          (source.quoteSpans === undefined ||
+            (Array.isArray(source.quoteSpans) &&
+              (!source.quoteSpans.length ||
+                (typeof source.exactQuote === "string" &&
+                  source.quoteSpans.every(
+                    (quote) => typeof quote === "string" && source.exactQuote.includes(quote),
+                  ))))),
+      ),
+  );
 // node-postgres accepts objects today, but making the JSON boundary explicit keeps
 // JSONB writes independent of its prepareValue implementation and prevents the
 // manifest path from regressing into the original PostgreSQL JSON failure.
@@ -508,7 +531,12 @@ export async function retrieveCurrentKnowledgeView(knowledge, refreshSources, so
         ...document,
         entries,
         incomplete: true,
-        unavailableCandidateCount: candidateCount - entries.length,
+        unavailableCandidateCount:
+          (Number.isInteger(document.unavailableCandidateCount)
+            ? document.unavailableCandidateCount
+            : 0) +
+          candidateCount -
+          entries.length,
         status: "candidate interpretations with incomplete current evidence",
       };
   return {
@@ -1241,6 +1269,7 @@ export async function communityKnowledge(db) {
       )
     ).rows;
     const annotations = new Map();
+    const unsupportedQuotes = new Set();
     for (const row of rows) {
       const candidate = validateAnnotation(parsed(row.candidate));
       const matches =
@@ -1272,6 +1301,12 @@ export async function communityKnowledge(db) {
         replyBoundaries: [],
       };
       const source = parsed(row.source);
+      if (
+        (candidate.sourceQuotes ?? []).some(
+          (quote) => quote.sourceId === row.source_id && !source.content.includes(quote.quote),
+        )
+      )
+        unsupportedQuotes.add(annotationKey);
       const replyTo = source.replyTo ?? null;
       const episode = parsed(row.episode);
       const selectedEpisodeSources = new Set([...episode.sourceIds, ...episode.contextIds]);
@@ -1317,7 +1352,9 @@ export async function communityKnowledge(db) {
         });
       annotations.set(annotationKey, entry);
     }
-    const entries = [...annotations.values()];
+    const entries = [...annotations]
+      .filter(([key]) => !unsupportedQuotes.has(key))
+      .map(([, entry]) => entry);
     if (target === "history") {
       const earliestSourceTime = (entry) =>
         entry.sources.reduce((earliest, source) => {
@@ -1336,6 +1373,9 @@ export async function communityKnowledge(db) {
       key,
       status: "candidate interpretations with cited current sources",
       entries,
+      ...(unsupportedQuotes.size
+        ? { incomplete: true, unavailableCandidateCount: unsupportedQuotes.size }
+        : {}),
     };
     const documentDigest = sha256(document);
     return transaction(async () => {
@@ -1539,6 +1579,8 @@ export async function communityKnowledge(db) {
         )
       )
         throw new Error("Community annotation source is outside the manifest episode channel");
+      if (!sourceQuotesMatch(annotation, sources))
+        throw new Error("Community annotation source quote does not match its current source");
       for (const claim of annotation.claims ?? [])
         for (const anchor of claim.anchors) {
           const source = sources.get(anchor.sourceId)?.source;
@@ -1724,6 +1766,7 @@ export async function communityKnowledge(db) {
         )
       )
         return stale("source-generation");
+      if (!sourceQuotesMatch(candidate, sources)) return stale("source-quote");
       const annotationId = work.annotationId ?? candidate.id ?? work.id.replaceAll("-", "");
       const previous = (
         await db.query(
@@ -1820,7 +1863,8 @@ export async function communityKnowledge(db) {
         !current ||
         current.revision !== prepared?.viewRevision ||
         current.document_digest !== prepared?.documentDigest ||
-        sha256(prepared?.document) !== prepared?.documentDigest
+        sha256(prepared?.document) !== prepared?.documentDigest ||
+        !viewQuotesMatch(prepared?.document)
       ) {
         await receipt(db, "stale-export", {
           target: prepared?.target ?? null,

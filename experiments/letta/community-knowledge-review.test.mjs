@@ -2154,3 +2154,103 @@ databaseTest(
     }
   },
 );
+
+databaseTest(
+  "annotation source quotations must be exact current source substrings",
+  async ({ knowledge, prepare }) => {
+    const fabricated = { ...candidate(), sourceQuotes: [{ sourceId, quote: "fabricated quote" }] };
+    await assert.rejects(() => prepare(fabricated), /source quote/);
+    const projected = annotationsFromUnderstanding(
+      [
+        {
+          key: "fabricated",
+          kind: "statement",
+          subjects: [authorId],
+          topics: ["trip"],
+          statement: "The speaker prefers trains.",
+          evidence: [{ messageId: sourceId, quote: "fabricated quote" }],
+        },
+      ],
+      manifest.episodes[0],
+    );
+    assert.equal(projected.length, 1);
+    await assert.rejects(() => prepare(projected[0]), /source quote/);
+    const valid = { ...candidate(), sourceQuotes: [{ sourceId, quote: "prefer the train" }] };
+    assert.equal((await knowledge.commitAnnotation(await prepare(valid))).disposition, "applied");
+  },
+);
+
+databaseTest(
+  "previously prepared fabricated source quotes cannot commit after restart",
+  async ({ db, knowledge, prepare }) => {
+    const valid = { ...candidate(), sourceQuotes: [{ sourceId, quote: "prefer the train" }] };
+    const work = await prepare(valid);
+    const badCandidate = {
+      ...work.candidate,
+      sourceQuotes: [{ sourceId, quote: "fabricated quote" }],
+    };
+    const { inputDigest: _previousDigest, ...badWork } = { ...work, candidate: badCandidate };
+    badWork.inputDigest = canonicalDigest(badWork);
+    await db.query(
+      "UPDATE pilot_knowledge_jobs SET candidate=$2::jsonb,input_digest=$3 WHERE id=$1",
+      [work.id, JSON.stringify(badCandidate), badWork.inputDigest],
+    );
+    const restarted = await communityKnowledge(db);
+    assert.equal((await restarted.commitAnnotation(badWork)).disposition, "stale-source");
+    assert.equal(
+      (await db.query("SELECT status FROM pilot_knowledge_jobs WHERE id=$1", [work.id])).rows[0]
+        .status,
+      "stale",
+    );
+    assert.equal(
+      (await db.query("SELECT count(*)::int AS n FROM pilot_knowledge_annotations")).rows[0].n,
+      0,
+    );
+  },
+);
+
+databaseTest(
+  "legacy fabricated quotes stay in history but are withheld from views and old exports",
+  async ({ db, knowledge, prepare }) => {
+    const valid = { ...candidate(), sourceQuotes: [{ sourceId, quote: "prefer the train" }] };
+    await knowledge.commitAnnotation(await prepare(valid));
+    const prepared = await knowledge.prepareExport({ target: "profile", key: authorId });
+    const bad = { ...valid, sourceQuotes: [{ sourceId, quote: "fabricated quote" }] };
+    await db.query("UPDATE pilot_knowledge_annotations SET candidate=$2::jsonb WHERE id=$1", [
+      valid.id,
+      JSON.stringify(bad),
+    ]);
+    const current = await knowledge.view("profile", authorId);
+    assert.equal(current.entries.length, 0);
+    assert.equal(current.unavailableCandidateCount, 1);
+    assert.deepEqual(
+      (await db.query("SELECT candidate FROM pilot_knowledge_annotations WHERE id=$1", [valid.id]))
+        .rows[0].candidate.sourceQuotes,
+      bad.sourceQuotes,
+    );
+    const oldDocument = structuredClone(prepared.document);
+    oldDocument.entries[0].sources[0].quoteSpans = ["fabricated quote"];
+    const oldDigest = canonicalDigest(oldDocument);
+    await db.query(
+      "UPDATE pilot_knowledge_views SET document=$3::jsonb,document_digest=$4 WHERE target=$1 AND key=$2",
+      [prepared.target, prepared.key, JSON.stringify(oldDocument), oldDigest],
+    );
+    const previousRevision = (
+      await db.query("SELECT revision FROM pilot_knowledge_views WHERE target=$1 AND key=$2", [
+        prepared.target,
+        prepared.key,
+      ])
+    ).rows[0].revision;
+    assert.equal(
+      (
+        await knowledge.commitExport({
+          ...prepared,
+          viewRevision: previousRevision,
+          document: oldDocument,
+          documentDigest: oldDigest,
+        })
+      ).disposition,
+      "stale-view",
+    );
+  },
+);
