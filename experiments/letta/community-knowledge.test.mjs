@@ -322,6 +322,31 @@ test("community manifests, loose annotations, and Discord command grammar are st
   assert.match(compact, /Page 1 of \d+ · (?:next:|end of current candidates)/);
 });
 
+test("current view withholds candidates whose sources appear only after refresh", async () => {
+  for (const newSourceIsContext of [false, true]) {
+    const original = { interpretation: "Original candidate", sources: [{ sourceId }] };
+    const newcomer = newSourceIsContext
+      ? {
+          interpretation: "New context",
+          sources: [{ sourceId }],
+          contextSources: [{ sourceId: contextId }],
+        }
+      : { interpretation: "New candidate", sources: [{ sourceId: contextId }] };
+    let reads = 0;
+    const result = await retrieveCurrentKnowledgeView(
+      { view: async () => ({ entries: ++reads === 1 ? [original] : [original, newcomer] }) },
+      async (ids) => assert.deepEqual(ids, [sourceId]),
+      async (ids) => ids.map((id) => ({ id })),
+      { target: "topic", topic: "public-transit" },
+    );
+    assert.equal(reads, 2);
+    assert.deepEqual(result.document.entries, [original]);
+    assert.equal(result.document.incomplete, true);
+    assert.equal(result.document.unavailableCandidateCount, 1);
+    assert.deepEqual(result.sources, [{ id: sourceId }]);
+  }
+});
+
 test("knowledge views label uncertainty without reversing its meaning in either layout", () => {
   for (const uncertainty of ["low", "medium", "high", "unknown"]) {
     for (const oversized of [false, true]) {

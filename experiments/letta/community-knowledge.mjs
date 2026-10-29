@@ -479,6 +479,7 @@ export async function retrieveCurrentKnowledgeView(knowledge, refreshSources, so
   const { target, key } = validateKnowledgeViewQuery(input);
   let document = await knowledge.view(target, key);
   const initialIds = viewSourceIds(document);
+  const refreshed = new Set(initialIds);
   if (initialIds.length) await refreshSources(initialIds);
   document = await knowledge.view(target, key);
   const sourceIds = viewSourceIds(document);
@@ -491,8 +492,10 @@ export async function retrieveCurrentKnowledgeView(knowledge, refreshSources, so
       [
         ...entry.sources,
         ...(Array.isArray(entry.contextSources) ? entry.contextSources : []),
-      ].every((source) => available.has(source.sourceId)),
+      ].every((source) => refreshed.has(source.sourceId) && available.has(source.sourceId)),
   );
+  // ponytail: one refresh pass; sources newly added to the view wait for the next
+  // request. Bounded convergence can replace this if concurrent changes are common.
   // A source packet is atomic evidence: never render part of an interpretation
   // when any cited original is deleted, held, or unavailable in the pilot store.
   // Preserve the underlying candidate for correction/review; this is only the
