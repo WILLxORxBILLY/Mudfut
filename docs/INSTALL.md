@@ -107,8 +107,9 @@ is started automatically without an explicit historical selection.
 ## Before inviting real conversation
 
 Use a separate test channel and your own controlled messages first. Check that
-unaddressed messages do not receive replies, addressed replies cite originals,
-source changes invalidate dependent understanding, and restarts retain memory.
+unaddressed messages do not receive replies, evidence-based claims in addressed
+replies are accurately attributed and cite their original messages, source changes
+invalidate dependent understanding, and restarts retain memory.
 Ordinary checks never send a Discord message or call a model on your behalf.
 
 To serve several text channels in the same guild, keep `channelId` as the primary
