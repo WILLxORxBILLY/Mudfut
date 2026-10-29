@@ -2374,9 +2374,10 @@ databaseTest(
         [edited.content],
       );
       // A row already made inconsistent by an earlier version remains excluded.
-      await replacement.query("UPDATE pilot_sources SET learnable=true,learned=false WHERE id=$1", [
-        command.id,
-      ]);
+      await replacement.query(
+        "UPDATE pilot_sources SET learnable=true,learned=false,addressed=false WHERE id=$1",
+        [command.id],
+      );
       assert.equal(await restarted.next(), null);
       await replacement.query("UPDATE pilot_sources SET addressed=true WHERE id=$1", [command.id]);
       assert.equal(await restarted.next(), null);
