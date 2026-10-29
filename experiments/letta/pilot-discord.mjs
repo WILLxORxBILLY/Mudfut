@@ -140,6 +140,24 @@ export function discordTransport(token, record) {
         throw error;
       }
     },
+    async react(channelId, messageId, emojiName, emojiId) {
+      const emoji = encodeURIComponent(`${emojiName}:${emojiId}`);
+      const response = await fetch(
+        `https://discord.com/api/v10/channels/${channelId}/messages/${messageId}/reactions/${emoji}/@me`,
+        {
+          method: "PUT",
+          headers: { Authorization: `Bot ${token}` },
+          signal: AbortSignal.timeout(5000),
+        },
+      );
+      if (!response.ok) {
+        const error = new Error("Discord acknowledgment failed");
+        error.status = response.status;
+        const retry = Number(response.headers.get("retry-after"));
+        if (Number.isFinite(retry) && retry >= 0) error.retryAfterMs = retry * 1000;
+        throw error;
+      }
+    },
     typing: (channelId) => rest.post(Routes.channelTyping(channelId)),
     send: (channelId, body) => rest.post(Routes.channelMessages(channelId), { body }),
   };
