@@ -10,9 +10,9 @@ This is an early release of the current Letta runtime. It contains no community
 history, learned memories, credentials or operator configuration. The older
 production gateway and its deployment machinery are outside this release.
 
-This repository is the canonical source for native bot features. The separate
-private `WILLxORxBILLY/new-western` repository owns legacy Fly archive work;
-the two repositories have independent release lanes.
+This repository is the canonical source for native bot features. Legacy Fly
+archive work lives in a separate private repository with an independent release
+lane; it is not required to run this project.
 
 ## Design and evidence
 
@@ -24,7 +24,9 @@ exact quotes and revisions before committing them. Corrections and competing
 claims retain lineage rather than silently replacing the past. Missing model
 observation decisions are retried per source revision and eventually held for
 inspection. These mechanisms protect evidence and recovery; they do not guarantee
-that an interpretation or answer is correct.
+that an interpretation or answer is correct. Profile and topic views organize
+attributed, revisable candidates; they are not validated measurements of a
+person’s beliefs or a measure of community-wide consensus.
 
 Start with the [architecture](docs/ARCHITECTURE.md) and its links to executable
 fictional checks. The model-free tests exercise integrity and recovery, not model

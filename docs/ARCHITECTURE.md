@@ -26,6 +26,29 @@ Private configuration and runtime state live outside the checkout. The archive
 is optional and has a separate reader role. Ordinary checks use fictional data;
 production deployments, credentials and real evidence are not release inputs. There are no migrations from a maintainer's private server.
 
+## A fictional walkthrough
+
+The [PostgreSQL knowledge fixture](../experiments/letta/community-knowledge.test.mjs)
+models a small, fictional discussion. A speaker says, “I will take the train for
+this trip.” A candidate attributes a preference for the train to that speaker.
+The candidate is an interpretation of the statement, not proof of the speaker’s
+broader beliefs.
+
+Before that candidate is committed, the source is edited to add “unless the
+weather turns.” The old pending work is rejected as stale. The fixture then
+supplies a new candidate qualified by the weather, commits it, and confirms that
+a replay does not create a duplicate. Opening a correction withdraws the
+dependent candidate from the profile view and retains a correction receipt and
+invalidated annotation; a previously prepared export cannot commit after the
+source is removed. The system does not automatically establish what the speaker
+really believes or resolve the interpretation.
+
+Run `pnpm letta:fixtures` to execute this case in disposable PostgreSQL. Look for
+“PostgreSQL knowledge jobs survive replacement, reject stale source work, and
+block delayed exports.” The candidate is supplied by the fixture, not produced or
+evaluated by a model; this is an integrity and recovery check, not a measure of
+model reasoning quality.
+
 ## Inspect the guarantees
 
 The following checks use fictional inputs and run without Discord or a model.
