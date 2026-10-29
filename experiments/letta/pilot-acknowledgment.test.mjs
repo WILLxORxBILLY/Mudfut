@@ -146,26 +146,29 @@ test("restart preserves pending attempt budget; malformed receipts and config ar
   assert.throws(() => validateAcknowledgment({ emojiId: "bad" }), /Invalid acknowledgment/);
 });
 
-test("rate-limited work does not delay a new acknowledgment or retry early", async () => {
-  let saved;
-  const calls = [];
-  const ack = acknowledgments({
+test("rate limits are persisted and prevent early reactions across a restart", async () => {
+  let saved,
+    calls = 0;
+  const options = {
     save: async (value) => {
       saved = structuredClone(value);
     },
-    react: async (_channel, id) => {
-      calls.push(id);
-      if (id === source().id)
-        throw Object.assign(new Error("rate limit"), { status: 429, retryAfterMs: 60000 });
+    react: async () => {
+      calls++;
+      throw Object.assign(new Error("rate limit"), { status: 429, retryAfterMs: 60000 });
     },
     record: async () => {},
-  });
+  };
+  const ack = acknowledgments(options);
   ack.offer(source(), Date.now(), since);
-  await until(() => saved?.items[0]?.nextAt > Date.now() + 50000);
-  ack.offer(source("111111111111111115"), Date.now(), since);
-  await until(() => saved?.items.some((item) => item.id.endsWith("115") && item.status === "done"));
-  assert.deepEqual(calls, [source().id, "111111111111111115"]);
+  await until(() => saved?.blockedUntil > Date.now() + 50000);
   ack.stop();
+  const resumed = acknowledgments({ ...options, initial: saved });
+  resumed.offer(source("111111111111111115"), Date.now(), since);
+  await until(() => saved.items.length === 2);
+  await new Promise((resolve) => setTimeout(resolve, 40));
+  assert.equal(calls, 1);
+  resumed.stop();
 });
 
 test("only addressed human messages after quiet bootstrap are eligible", () => {

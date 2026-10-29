@@ -48,10 +48,12 @@ export function acknowledgments({
       !Array.isArray(initial.items) ||
       initial.items.length > 1256 ||
       !initial.items.every(valid) ||
+      (initial.blockedUntil !== undefined && !Number.isSafeInteger(initial.blockedUntil)) ||
       new Set(initial.items.map((item) => item.id)).size !== initial.items.length)
   )
     throw new Error("Invalid acknowledgment receipt; inspect before enabling reactions");
   const items = initial?.items.map((item) => ({ ...item })) ?? [];
+  let blockedUntil = initial?.blockedUntil ?? 0;
   let chain = Promise.resolve(),
     timer,
     stopped = false;
@@ -59,7 +61,7 @@ export function acknowledgments({
     Promise.resolve()
       .then(() => record(event))
       .catch(() => {});
-  const persist = () => save({ version: 1, items });
+  const persist = () => save({ version: 1, blockedUntil, items });
   const serial = (operation) => {
     const result = chain.then(operation);
     chain = result.catch((error) =>
@@ -73,7 +75,10 @@ export function acknowledgments({
     timer = null;
     const pending = items.filter((item) => item.status === "pending");
     if (!pending.length) return;
-    const wait = Math.max(0, Math.min(...pending.map((item) => item.nextAt)) - now());
+    const wait = Math.min(
+      2147483647,
+      Math.max(0, Math.max(blockedUntil, Math.min(...pending.map((item) => item.nextAt))) - now()),
+    );
     timer = timers.setTimeout(() => {
       timer = null;
       void serial(drain).catch(() => {});
@@ -82,7 +87,7 @@ export function acknowledgments({
   };
   async function drain() {
     const item = items.find((entry) => entry.status === "pending" && entry.nextAt <= now());
-    if (!item || stopped) {
+    if (!item || stopped || now() < blockedUntil) {
       schedule();
       return;
     }
@@ -111,6 +116,11 @@ export function acknowledgments({
         Math.min(300000, Number(error?.retryAfterMs) || 1000 * 4 ** (item.attempts - 1)),
       );
       item.nextAt = now() + retryMs;
+      if (status === 429)
+        blockedUntil = Math.min(
+          Number.MAX_SAFE_INTEGER,
+          Math.ceil(now() + (Number.isFinite(retryAfter) && retryAfter > 0 ? retryAfter : retryMs)),
+        );
       await log({
         type: "acknowledgment_failed",
         sourceId: item.id,
@@ -140,6 +150,8 @@ export function acknowledgments({
       // Discord's clock, not the local host clock, bounds this comparison.
       if (!Number.isFinite(created) || created > serverTime + 1000 || serverTime - created > 300000)
         return;
+      // ponytail: a crash before this asynchronous receipt is saved can miss an
+      // acknowledgment; transactionally enqueue with source ingestion to close that gap.
       void serial(async () => {
         if (stopped || items.some((item) => item.id === source.id)) return;
         for (let i = items.length - 1; i >= 0; i--)
