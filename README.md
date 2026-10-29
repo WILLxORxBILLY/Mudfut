@@ -2,7 +2,9 @@
 
 A self-hosted Discord community bot with source-backed memory. It learns from
 configured channels, replies when addressed, and keeps dated, revisable
-understanding grounded in original messages.
+understanding grounded in original messages. The design addresses a common
+problem in conversational memory: a generated summary can lose who said what,
+when they said it, or whether the source has since changed.
 
 This is an early release of the current Letta runtime. It contains no community
 history, learned memories, credentials or operator configuration. The older
@@ -11,6 +13,22 @@ production gateway and its deployment machinery are outside this release.
 This repository is the canonical source for native bot features. The separate
 private `WILLxORxBILLY/new-western` repository owns legacy Fly archive work;
 the two repositories have independent release lanes.
+
+## Design and evidence
+
+Discord messages → current-source checks → model observation decisions →
+revisioned PostgreSQL memory → cited replies and derived views.
+
+The model proposes interpretations; application code validates source identity,
+exact quotes and revisions before committing them. Corrections and competing
+claims retain lineage rather than silently replacing the past. Missing model
+observation decisions are retried per source revision and eventually held for
+inspection. These mechanisms protect evidence and recovery; they do not guarantee
+that an interpretation or answer is correct.
+
+Start with the [architecture](docs/ARCHITECTURE.md) and its links to executable
+fictional checks. The model-free tests exercise integrity and recovery, not model
+reasoning quality. No general accuracy benchmark or human evaluation is claimed.
 
 ## Install
 
@@ -23,6 +41,10 @@ cd Mudfut
 corepack enable
 pnpm install --frozen-lockfile
 ```
+
+On Unix, the pinned Letta dependency may print `bun: command not found` during
+installation. Its optional Bun check falls back to Node; Bun is not required for
+the checks below. Confirm installation succeeds and run the checks before use.
 
 ## Run your own bot
 
@@ -77,8 +99,9 @@ pnpm format:check
 ```
 
 The fixture runner starts a fresh loopback database with random credentials and
-removes only that run's cluster. Private-input checks explicitly skip when their
-private files are absent. `pnpm letta:live` is a separate opt-in fictional model
+removes only that run's cluster. Set a valid locale (for example `LC_ALL=C`) if
+PostgreSQL cannot start because the host locale is unset. Private-input checks
+explicitly skip when their private files are absent. `pnpm letta:live` is a separate opt-in fictional model
 proof; it uses your account and retains its results outside the repository.
 
 ## Limits

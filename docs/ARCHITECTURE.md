@@ -25,3 +25,34 @@ changes invalidate their dependent current views and work.
 Private configuration and runtime state live outside the checkout. The archive
 is optional and has a separate reader role. Ordinary checks use fictional data;
 production deployments, credentials and real evidence are not release inputs. There are no migrations from a maintainer's private server.
+
+## Inspect the guarantees
+
+The following checks use fictional inputs and run without Discord or a model.
+Tests marked for PostgreSQL need the disposable fixture runner; `pnpm test` alone
+skips those database cases. Run `pnpm letta:fixtures` as described in the
+[README](../README.md#checks-without-model-credentials).
+
+| Question                                              | Implementation and executable evidence                                                                                                                                                                                                            |
+| ----------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| What ties a claim to its sources?                     | [Memory validation](../experiments/letta/pilot-memory.mjs) checks evidence and lineage; [memory PostgreSQL tests](../experiments/letta/memory-postgres.test.mjs) exercise revisions, corrections and invalidation.                                |
+| What happens when a source or interpretation changes? | [Knowledge tests](../experiments/letta/community-knowledge.test.mjs) exercise stale work, correction withdrawal and revisioned views; [recovery tests](../experiments/letta/community-knowledge-review.test.mjs) fence edited or deleted sources. |
+| What if a model omits an observation decision?        | [Generation failure tests](../experiments/letta/generation-failures.test.mjs) verify retry, a persistent hold and continued processing of other work.                                                                                             |
+| What happens around interrupted work or delivery?     | [Recovery tests](../experiments/letta/recovery-check.test.mjs) and [reliability tests](../experiments/letta/reliability.test.mjs) exercise durable state and ambiguous-delivery handling.                                                         |
+
+For a small credential-free example after installing dependencies, run:
+
+```sh
+node --test --test-name-pattern="only incomplete live model output" experiments/letta/generation-failures.test.mjs
+```
+
+The fictional case checks that only an incomplete live observation decision is
+eligible for deferral; database, delivery and historical failures are not
+reclassified as that error. The separate PostgreSQL case in the same file checks
+the durable retry and hold behavior through `pnpm letta:fixtures`.
+
+These checks establish behavior for the tested cases, not whether the model
+chooses a useful interpretation, correctly understands disagreement, or produces
+a good reply. Semantic review needs independent, unused cases and human judgment;
+the optional private-input tests are skipped without their inputs. No public
+model-quality benchmark is included.
