@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
-import { isolatedMemory, snapshotArchive } from "./pilot-baseline-snapshot.mjs";
+import { isolatedMemory, loadBaseline, snapshotArchive } from "./pilot-baseline-snapshot.mjs";
 
 const source = (id, content, createdAt, replyTo = null) => ({
   id,
@@ -17,6 +17,52 @@ const source = (id, content, createdAt, replyTo = null) => ({
   editedAt: null,
   replyTo,
   url: `https://discord.com/channels/111111111111111111/222222222222222222/${id}`,
+});
+
+test("stored-corpus manifest binds every consumed file before replay", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "mudfut-baseline-manifest-"));
+  const names = [
+    "cases.json",
+    "memory-before-selection.json",
+    "bo-food-plan.sources.json",
+    "domestic-work.earlier-context.json",
+    "domestic-work.sources.json",
+    "fisher-rangers.sources.json",
+    "sports-idleness.sources.json",
+    "suburban-families.sources.json",
+  ];
+  const content = "fictional memory";
+  const hashes = {};
+  try {
+    for (const name of names) {
+      const data =
+        name === "cases.json"
+          ? JSON.stringify({ cases: [{ id: "fictional", prompt: "What happened?" }] })
+          : name === "memory-before-selection.json"
+            ? JSON.stringify({
+                row: { content, revision: createHash("sha256").update(content).digest("hex") },
+              })
+            : "[]";
+      await writeFile(join(directory, name), data);
+      hashes[name] = createHash("sha256").update(data).digest("hex");
+    }
+    await writeFile(join(directory, "MANIFEST.json"), JSON.stringify({ files: {} }));
+    await assert.rejects(loadBaseline(directory), /manifest.*missing/i);
+    for (const name of names) {
+      const incomplete = { ...hashes };
+      delete incomplete[name];
+      await writeFile(join(directory, "MANIFEST.json"), JSON.stringify({ files: incomplete }));
+      await assert.rejects(loadBaseline(directory), /manifest.*missing/i);
+    }
+    await writeFile(join(directory, "MANIFEST.json"), JSON.stringify({ files: hashes }));
+    const loaded = await loadBaseline(directory);
+    assert.deepEqual(loaded.cases, [{ id: "fictional", prompt: "What happened?" }]);
+    assert.equal(loaded.memory.content, content);
+    await writeFile(join(directory, names[2]), "[{}]");
+    await assert.rejects(loadBaseline(directory), /checksum mismatch/);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
 });
 
 test("stored-corpus archive searches, pages, and expands only prepared sources", async () => {
