@@ -315,11 +315,44 @@ test("community manifests, loose annotations, and Discord command grammar are st
     1,
     "current and legacy manifest-topic qualifications are shown once per compact view",
   );
-  assert.match(compact, /confidence: unassessed/);
+  assert.match(compact, /uncertainty: unassessed/);
   assert.match(compact, /kind: plan/);
   assert.match(compact, /Topic label: selected archive episode/);
   assert.doesNotMatch(compact, /founder-selected/);
   assert.match(compact, /Page 1 of \d+ · (?:next:|end of current candidates)/);
+});
+
+test("knowledge views label uncertainty without reversing its meaning in either layout", () => {
+  for (const uncertainty of ["low", "medium", "high", "unknown"]) {
+    for (const oversized of [false, true]) {
+      const entry = {
+        interpretation: "The speaker may prefer the train.",
+        uncertainty,
+        qualifications: oversized ? Array(8).fill("A qualification ".repeat(14)) : [],
+        sources: [
+          {
+            sourceId,
+            sourceRevision: 1,
+            canonicalPermalink: `https://discord.com/channels/${guildId}/${channelId}/${sourceId}`,
+          },
+        ],
+      };
+      const document = { target: "topic", key: "public-transit", entries: [entry] };
+      const pages = [renderKnowledgeView(document)];
+      while (pages.at(-1).includes(" · next: `")) {
+        const command = /next: `(.*)`/.exec(pages.at(-1))[1];
+        pages.push(renderKnowledgeView(document, { page: parseKnowledgeCommand(command).page }));
+        assert.ok(pages.length <= 10);
+      }
+      const output = pages.join("\n");
+      const expected = uncertainty === "unknown" ? "unassessed" : uncertainty;
+      assert.match(output, new RegExp(`uncertainty: ${expected}`));
+      assert.doesNotMatch(output, /confidence:/);
+      if (oversized) assert.match(output, /Candidate 1 — uncertainty:/);
+      else assert.doesNotMatch(output, /Candidate 1 — uncertainty:/);
+      assert.ok(pages.every((page) => page.length <= 1800));
+    }
+  }
 });
 
 test("knowledge views paginate every cited candidate in stable order with complete evidence", () => {
