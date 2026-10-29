@@ -22,6 +22,33 @@ export function eligibleAcknowledgment(message, source, cursors, addressed) {
   );
 }
 
+// Ingest commits before cursor advancement. Recovering fresh addressed sources
+// closes a crash between recognition and the asynchronous file receipt.
+export async function recoverAcknowledgments({ db, ack, guildId, sinceId, serverTime, record }) {
+  if (
+    !snowflake(guildId) ||
+    !snowflake(sinceId) ||
+    !Number.isSafeInteger(serverTime) ||
+    serverTime < 1420070700000
+  )
+    throw new Error("Invalid acknowledgment recovery boundary");
+  const recent = ((BigInt(serverTime - 300000) - 1420070400000n) << 22n).toString();
+  const floor = BigInt(recent) > BigInt(sinceId) ? recent : sinceId;
+  // ponytail: 256 recovered messages per restart bounds startup; a paged durable
+  // scheduler is needed if a five-minute backlog exceeds that ceiling.
+  const rows = (
+    await db.query(
+      `SELECT source FROM pilot_sources WHERE addressed AND NOT deleted
+      AND source->>'guildId'=$1 AND id::numeric > $2::numeric
+      ORDER BY id::numeric LIMIT 257`,
+      [guildId, floor],
+    )
+  ).rows;
+  if (rows.length > 256) await record({ type: "acknowledgment_recovery_overflow" }).catch(() => {});
+  for (const row of rows.slice(0, 256)) ack.offer(row.source, serverTime, sinceId);
+  return Math.min(rows.length, 256);
+}
+
 // ponytail: one bounded serial reaction queue keeps reply processing independent;
 // upgrade to a dedicated durable scheduler beyond 256 pending or 1,256 retained receipts.
 export function acknowledgments({
@@ -150,8 +177,6 @@ export function acknowledgments({
       // Discord's clock, not the local host clock, bounds this comparison.
       if (!Number.isFinite(created) || created > serverTime + 1000 || serverTime - created > 300000)
         return;
-      // ponytail: a crash before this asynchronous receipt is saved can miss an
-      // acknowledgment; transactionally enqueue with source ingestion to close that gap.
       void serial(async () => {
         if (stopped || items.some((item) => item.id === source.id)) return;
         for (let i = items.length - 1; i >= 0; i--)

@@ -29,6 +29,7 @@ import { timingTrace } from "./pilot-timing.mjs";
 import {
   acknowledgments,
   eligibleAcknowledgment,
+  recoverAcknowledgments,
   validateAcknowledgment,
 } from "./pilot-acknowledgment.mjs";
 import { currentHistoryEpisode, historyQueue } from "./pilot-history.mjs";
@@ -128,6 +129,9 @@ try {
   } else {
     const discord = discordTransport((await privateFile("discord-token")).trim(), record);
     const bot = await discord.me();
+    const store = await pilotStore(db, config, {
+      discoverySince: discoveryBoundary(discord.serverTime()),
+    });
     if (config.acknowledgment && mode === "run") {
       try {
         validateAcknowledgment(config.acknowledgment);
@@ -147,9 +151,22 @@ try {
         await record({ type: "acknowledgment_disabled", error: safeError(error) }).catch(() => {});
       }
     }
-    const store = await pilotStore(db, config, {
-      discoverySince: discoveryBoundary(discord.serverTime()),
-    });
+    if (ack) {
+      try {
+        await recoverAcknowledgments({
+          db,
+          ack,
+          guildId: config.guildId,
+          sinceId: config.acknowledgment.sinceId,
+          serverTime: discord.serverTime(),
+          record,
+        });
+      } catch (error) {
+        await record({ type: "acknowledgment_recovery_failed", error: safeError(error) }).catch(
+          () => {},
+        );
+      }
+    }
     const channelPlan = await liveChannelPlan(discord, config);
     const polls = channelPollStatus(config, channelPlan.routes, {
       initial: await optionalJson("channel-polls.json"),

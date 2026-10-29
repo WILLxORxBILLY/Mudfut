@@ -1334,3 +1334,56 @@ test("enrollment uses Discord time and includes the whole response boundary seco
   assert.ok(id < (BigInt(ms + 999) - 1420070400000n) << 22n);
   assert.throws(() => discoveryBoundary(NaN), /clock/);
 });
+
+test(
+  "acknowledgment restart recovers only fresh ingested addressed sources",
+  { skip: process.env.CHECK_DATABASE !== "1" },
+  async () => {
+    const { recoverAcknowledgments } = await import("./pilot-acknowledgment.mjs");
+    const db = new pg.Client(JSON.parse(await readFile(join(state, "postgres.json"), "utf8")));
+    await db.connect();
+    try {
+      await db.query(
+        "CREATE TEMP TABLE pilot_sources (id text, source jsonb, addressed boolean, deleted boolean)",
+      );
+      const serverTime = Date.now();
+      const idAt = (ms) => ((BigInt(ms) - 1420070400000n) << 22n).toString();
+      const sinceId = idAt(serverTime - 120000);
+      const current = {
+        id: idAt(serverTime - 1000),
+        channelId: config.channelId,
+        guildId: config.guildId,
+        createdAt: new Date(serverTime - 1000).toISOString(),
+      };
+      const old = { ...current, id: idAt(serverTime - 130000) };
+      const ambient = { ...current, id: idAt(serverTime - 2000) };
+      const other = { ...current, id: idAt(serverTime - 3000), guildId: "999999999999999999" };
+      for (const [source, addressed] of [
+        [current, true],
+        [old, true],
+        [ambient, false],
+        [other, true],
+      ])
+        await db.query("INSERT INTO pilot_sources VALUES($1,$2,$3,false)", [
+          source.id,
+          source,
+          addressed,
+        ]);
+      const offered = [];
+      assert.equal(
+        await recoverAcknowledgments({
+          db,
+          ack: { offer: (source) => offered.push(source) },
+          guildId: config.guildId,
+          sinceId,
+          serverTime,
+          record: async () => {},
+        }),
+        1,
+      );
+      assert.deepEqual(offered, [current]);
+    } finally {
+      await db.end();
+    }
+  },
+);
