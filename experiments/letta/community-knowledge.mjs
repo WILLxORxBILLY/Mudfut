@@ -2323,25 +2323,13 @@ export async function communityKnowledge(db) {
       throw new Error("Invalid community knowledge requeue completion");
     const episodeId = `${manifestId}:${episodeKey}`;
     return transaction(async () => {
-      const jobs = (
-        await db.query(
-          "SELECT id,source_ids FROM pilot_knowledge_jobs WHERE status='requeued' AND manifest_id=$1 AND episode_id=$2",
-          [manifestId, episodeId],
-        )
-      ).rows;
-      const sourceIds = [...new Set(jobs.flatMap((job) => job.source_ids))];
-      // A concurrent correction takes the same source lock before opening its case.
-      await db.query(
-        "SELECT id FROM pilot_knowledge_sources WHERE id=ANY($1::text[]) ORDER BY id FOR UPDATE",
-        [sourceIds],
-      );
       const retired = await db.query(
         `UPDATE pilot_knowledge_jobs SET status='stale',effective=false,completed_at=clock_timestamp()
-         WHERE status='requeued' AND manifest_id=$1 AND episode_id=$2 AND id=ANY($3::text[])
+         WHERE status='requeued' AND manifest_id=$1 AND episode_id=$2
            AND NOT EXISTS (SELECT 1 FROM pilot_knowledge_corrections c
              WHERE c.status='open' AND c.source_id=ANY(pilot_knowledge_jobs.source_ids))
          RETURNING id`,
-        [manifestId, episodeId, jobs.map((job) => job.id)],
+        [manifestId, episodeId],
       );
       if (!retired.rowCount) return { disposition: "none", episodeId };
       await receipt(db, "requeued-episode-completed", {
