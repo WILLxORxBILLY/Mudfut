@@ -266,6 +266,32 @@ test("ordinary recall includes sourced tentative inference and linked contrary e
   );
 });
 
+test("memory reads refresh predecessor dependencies as well as direct quotes", async () => {
+  const revised = entry("club-hours", second, second.content, { sourceIds: [first.id, second.id] });
+  const available = new Map(sources);
+  const requested = [];
+  const result = await readUnderstanding(
+    snapshot([revised]),
+    { keys: [revised.key] },
+    available,
+    async (ids) => {
+      requested.push(...ids);
+    },
+  );
+  assert.deepEqual(new Set(requested), new Set([first.id, second.id]));
+  assert.deepEqual(result.entries[0].sourceIds, [first.id, second.id]);
+  assert.deepEqual(
+    result.sources.map((source) => source.messageId),
+    [second.id],
+  );
+  await assert.rejects(
+    readUnderstanding(snapshot([revised]), { keys: [revised.key] }, available, async () => {
+      available.delete(first.id);
+    }),
+    /Memory evidence changed or disappeared/,
+  );
+});
+
 test("recall follows same-person shared originals once and reports truncated matches", async () => {
   const related = entry("qualification", second, "Club policy has a conditional cost limit.");
   const seed = entry("club-policy", first, "Club policy is restrictive.", {

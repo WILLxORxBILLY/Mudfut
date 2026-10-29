@@ -216,9 +216,12 @@ export async function readUnderstanding(snapshot, options, sources, lookup) {
           (entry.aliases ?? []).some((key) => options.keys.includes(key)),
       )
     : selectUnderstanding(entries, options);
-  await lookup([
-    ...new Set(selected.flatMap((entry) => entry.evidence.map((item) => item.messageId))),
-  ]);
+  // Revision lineage can depend on older sources beyond the current quote.
+  const requiredSources = evidenceIds(selected);
+  await lookup(requiredSources);
+  for (const id of requiredSources)
+    if (sources.get(id)?.id !== id)
+      throw new Error(`Memory evidence changed or disappeared: ${id}`);
   const matched = options.keys
     ? selected
     : rankUnderstanding(entries, options).map((row) => row.entry);
