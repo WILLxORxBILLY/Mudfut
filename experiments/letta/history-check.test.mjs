@@ -622,3 +622,88 @@ test("exact claim clones cannot consume memory capacity; sourced changes stay di
     /changed or disappeared/,
   );
 });
+
+test(
+  "manual PostgreSQL selection keeps microseconds and numeric snowflake order",
+  { skip: process.env.CHECK_DATABASE !== "1" },
+  async () => {
+    const { execFile } = await import("node:child_process");
+    const { promisify } = await import("node:util");
+    const { fileURLToPath } = await import("node:url");
+    const credentials = JSON.parse(await readFile(join(state, "postgres.json"), "utf8"));
+    const admin = new pg.Client(credentials);
+    await admin.connect();
+    const database = "mudfut_manual_precision_" + randomUUID().replaceAll("-", "");
+    const password = randomUUID().replaceAll("-", "");
+    const directory = await mkdtemp(join(tmpdir(), "mudfut-manual-precision-"));
+    let db,
+      roleCreated = false;
+    try {
+      await admin.query(`CREATE ROLE mudfut_history_reader LOGIN PASSWORD '${password}'`);
+      roleCreated = true;
+      await admin.query(`CREATE DATABASE ${database}`);
+      db = new pg.Client({ ...credentials, database });
+      await db.connect();
+      await db.query(
+        await readFile(new URL("../../docs/archive-schema.sql", import.meta.url), "utf8"),
+      );
+      await db.query("GRANT SELECT ON messages TO mudfut_history_reader");
+      const records = [
+        ["88888888888888888", "2025-01-02T00:00:00.000001Z"],
+        ["99999999999999999", "2025-01-02T00:00:00.000100Z"],
+        ["100000000000000000", "2025-01-02T00:00:00.000100Z"],
+        ["100000000000000001", "2025-01-02T00:00:00.000200Z"],
+      ];
+      for (const [id, at] of records)
+        await db.query(
+          `INSERT INTO messages(guild_id,channel_id,message_id,created_at,content,author_id,author_display_name,content_hash)
+        VALUES($1,$2,$3,$4,'A conversation','333333333333333333','Fictional member',repeat('a',64))`,
+          [guildId, old, id, at],
+        );
+      const selection = {
+        id: "precision-window",
+        windows: [
+          {
+            key: "window",
+            label: "Precision fixture",
+            guildId,
+            channelId: old,
+            start: "2025-01-02T00:00:00.000100Z",
+            end: "2025-01-02T00:00:00.000100Z",
+          },
+        ],
+      };
+      await writeFile(join(directory, "pilot.json"), JSON.stringify({ guildId, channelId }), {
+        mode: 0o600,
+      });
+      await writeFile(
+        join(directory, "history-postgres.json"),
+        JSON.stringify({ ...credentials, database, user: "mudfut_history_reader", password }),
+        { mode: 0o600 },
+      );
+      await writeFile(join(directory, "selection.json"), JSON.stringify(selection), {
+        mode: 0o600,
+      });
+      await promisify(execFile)(
+        process.execPath,
+        [
+          fileURLToPath(new URL("./pilot-history-cli.mjs", import.meta.url)),
+          "stage",
+          join(directory, "selection.json"),
+        ],
+        { env: { ...process.env, MUDFUT_STATE_DIR: directory } },
+      );
+      const snapshot = JSON.parse(
+        await readFile(join(directory, "history-selection-precision-window.json"), "utf8"),
+      );
+      assert.deepEqual(snapshot.pass.episodes[0].sourceIds, [records[1][0], records[2][0]]);
+      assert.deepEqual(snapshot.pass.episodes[0].contextIds, [records[0][0], records[3][0]]);
+    } finally {
+      await db?.end();
+      await admin.query(`DROP DATABASE IF EXISTS ${database} WITH (FORCE)`);
+      if (roleCreated) await admin.query("DROP ROLE mudfut_history_reader");
+      await admin.end();
+      await rm(directory, { recursive: true, force: true });
+    }
+  },
+);

@@ -462,12 +462,12 @@ export function validateHistoryAutomation(value) {
 export async function selectAutomaticHistoryWindow(history, channel, cursor, settings) {
   const candidates = (
     await history.query(
-      `SELECT message_id,created_at FROM messages
+      `SELECT message_id,created_at::text AS created_at FROM messages
        WHERE guild_id=$1 AND channel_id=$2 AND (thread_id IS NULL OR thread_id=channel_id)
          AND deleted_at IS NULL AND content IS NOT NULL
          AND created_at >= $3::timestamptz AND created_at <= COALESCE($4::timestamptz,now())
          AND (created_at,message_id::numeric) > ($5::timestamptz,$6::numeric)
-       ORDER BY created_at,message_id::numeric LIMIT $7`,
+       ORDER BY messages.created_at,message_id::numeric LIMIT $7`,
       [
         channel.guildId,
         channel.channelId,
@@ -495,7 +495,7 @@ export async function selectAutomaticHistoryWindow(history, channel, cursor, set
     last = targets.at(-1);
   const context = (
     await history.query(
-      `SELECT message_id,created_at FROM (
+      `SELECT message_id,created_at::text AS created_at FROM (
          (SELECT message_id,created_at FROM messages
           WHERE guild_id=$1 AND channel_id=$2 AND (thread_id IS NULL OR thread_id=channel_id)
             AND deleted_at IS NULL AND content IS NOT NULL
@@ -507,7 +507,7 @@ export async function selectAutomaticHistoryWindow(history, channel, cursor, set
             AND deleted_at IS NULL AND content IS NOT NULL
             AND (created_at,message_id::numeric) > ($5::timestamptz,$6::numeric)
           ORDER BY created_at,message_id::numeric LIMIT 4)
-       ) surrounding ORDER BY created_at,message_id::numeric`,
+       ) surrounding ORDER BY surrounding.created_at,message_id::numeric`,
       [
         channel.guildId,
         channel.channelId,
@@ -521,7 +521,10 @@ export async function selectAutomaticHistoryWindow(history, channel, cursor, set
   return {
     targets,
     contextIds: context.map((row) => row.message_id),
-    cursor: { at: new Date(last.created_at).toISOString(), id: last.message_id },
+    cursor: {
+      at: typeof last.created_at === "string" ? last.created_at : last.created_at.toISOString(),
+      id: last.message_id,
+    },
   };
 }
 
@@ -582,7 +585,7 @@ function historyAutomation(store, history, directory, record, shouldYield, failu
       const ids = settings.channels.map((channel) => `${settings.id}:${channel.channelId}`);
       const cursor = (
         await store.db.query(
-          "SELECT * FROM pilot_history_automation WHERE id=ANY($1::text[]) AND NOT exhausted ORDER BY updated_at,id LIMIT 1",
+          "SELECT id,manifest,cursor_at::text AS cursor_at,cursor_id FROM pilot_history_automation WHERE id=ANY($1::text[]) AND NOT exhausted ORDER BY updated_at,id LIMIT 1",
           [ids],
         )
       ).rows[0];

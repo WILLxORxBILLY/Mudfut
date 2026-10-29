@@ -76,12 +76,13 @@ try {
         throw new Error(
           "Window needs valid guild/channel IDs and dates spanning at most 45 minutes",
         );
-      const sql = `SELECT m.message_id,m.author_id,m.author_display_name,m.content,m.created_at,m.reply_to_message_id
+      const sql = `SELECT m.message_id,m.author_id,m.author_display_name,m.content,m.created_at::text AS created_at,m.reply_to_message_id
         FROM messages m WHERE m.guild_id=$1 AND m.channel_id=$2 AND m.deleted_at IS NULL
         AND m.content IS NOT NULL AND (m.thread_id IS NULL OR m.thread_id=m.channel_id)`;
       const focus = (
         await db.query(
-          sql + " AND m.created_at BETWEEN $3 AND $4 ORDER BY m.created_at,m.message_id LIMIT 25",
+          sql +
+            " AND m.created_at BETWEEN $3 AND $4 ORDER BY m.created_at,m.message_id::numeric LIMIT 25",
           [w.guildId, w.channelId, w.start, w.end],
         )
       ).rows;
@@ -90,7 +91,7 @@ try {
       const before = (
         await db.query(
           sql +
-            " AND (m.created_at,m.message_id)<($3::timestamptz,$4::text) ORDER BY m.created_at DESC,m.message_id DESC LIMIT 4",
+            " AND (m.created_at,m.message_id::numeric)<($3::timestamptz,$4::numeric) ORDER BY m.created_at DESC,m.message_id::numeric DESC LIMIT 4",
           [w.guildId, w.channelId, focus[0].created_at, focus[0].message_id],
         )
       ).rows.reverse();
@@ -98,7 +99,7 @@ try {
       const after = (
         await db.query(
           sql +
-            " AND (m.created_at,m.message_id)>($3::timestamptz,$4::text) ORDER BY m.created_at,m.message_id LIMIT 4",
+            " AND (m.created_at,m.message_id::numeric)>($3::timestamptz,$4::numeric) ORDER BY m.created_at,m.message_id::numeric LIMIT 4",
           [w.guildId, w.channelId, last.created_at, last.message_id],
         )
       ).rows;
