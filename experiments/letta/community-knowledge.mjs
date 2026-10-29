@@ -69,7 +69,12 @@ const viewEvidenceSafe = (document) =>
       )
     )
       return false;
-    if ((entry.claims ?? []).some((claim) => !Array.isArray(claim?.anchors))) return false;
+    if (
+      (entry.claims ?? []).some(
+        (claim) => !Array.isArray(claim?.anchors) || claim.anchors.some((anchor) => !anchor),
+      )
+    )
+      return false;
     const byId = new Map(
       packets.map((source) => [source.sourceId, { content: source.exactQuote }]),
     );
