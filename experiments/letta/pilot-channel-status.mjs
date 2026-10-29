@@ -1,5 +1,5 @@
 import { generationFailureStatus } from "./pilot-generation-failures.mjs";
-import { replyChannels, validateScope } from "./pilot-store.mjs";
+import { replyChannels, validateScope, snowflake } from "./pilot-store.mjs";
 
 const errorCode = (error) => ({
   code: /^[A-Z0-9_]{1,40}$/.test(String(error?.code ?? "")) ? String(error.code) : null,
@@ -13,9 +13,14 @@ const matchingPoll = (poll, config) => {
     poll?.schemaVersion === 1 &&
     poll.guildId === config.guildId &&
     Array.isArray(poll.routes) &&
-    poll.routes.length === ids.length &&
-    new Set(poll.routes.map((route) => route?.id)).size === ids.length &&
-    poll.routes.every((route) => ids.includes(route?.id)) &&
+    (poll.replyScope ?? "configured") === (config.replyScope ?? "configured") &&
+    new Set(poll.routes.map((route) => route?.id)).size === poll.routes.length &&
+    (config.replyScope === "guild"
+      ? poll.routes.every(
+          (route) => snowflake(route?.id) && [0, 2, 5, 13, 15, 16].includes(route.type),
+        )
+      : poll.routes.length === ids.length &&
+        poll.routes.every((route) => ids.includes(route?.id))) &&
     poll.polls &&
     typeof poll.polls === "object" &&
     !Array.isArray(poll.polls) &&
@@ -32,6 +37,7 @@ export function channelPollStatus(config, routes, { initial, save, now = Date.no
     ? structuredClone(initial)
     : { schemaVersion: 1, guildId: config.guildId, polls: {}, threads: {}, activeChannelIds: [] };
   snapshot.routes = routes;
+  snapshot.replyScope = config.replyScope ?? "configured";
   let saving = Promise.resolve();
   const publish = async () => {
     snapshot.at = new Date(now()).toISOString();
@@ -49,6 +55,7 @@ export function channelPollStatus(config, routes, { initial, save, now = Date.no
       if (!snapshot.discovery || Date.parse(discoveredAt) >= Date.parse(snapshot.discovery.at)) {
         snapshot.discovery = { at: discoveredAt, ok: true };
         snapshot.activeChannelIds = discovered.channelIds;
+        if (discovered.routes) snapshot.routes = discovered.routes;
       }
       for (const thread of discovered.threads) snapshot.threads[thread.id] = thread.parent_id;
       for (const result of results) {
@@ -74,10 +81,14 @@ export async function channelStatus(
   { poll, health, recovery, archive, now = Date.now() } = {},
 ) {
   validateScope(config);
-  const configured = replyChannels(config);
   const observed = matchingPoll(poll, config) ? poll : null;
+  const configured =
+    config.replyScope === "guild" && observed
+      ? observed.routes.map((route) => route.id)
+      : replyChannels(config);
   const report = {
     observedAt: new Date(now).toISOString(),
+    replyScope: config.replyScope ?? "configured",
     runtime: {
       state: recovery?.held
         ? "held"
@@ -109,8 +120,9 @@ export async function channelStatus(
     report.scopeMatches = Boolean(
       meta &&
       meta.scope.guildId === config.guildId &&
-      replyChannels(meta.scope).length === configured.length &&
-      replyChannels(meta.scope).every((id) => configured.includes(id)),
+      (meta.scope.replyScope ?? "configured") === (config.replyScope ?? "configured") &&
+      replyChannels(meta.scope).length === replyChannels(config).length &&
+      replyChannels(meta.scope).every((id) => replyChannels(config).includes(id)),
     );
     const threads = (
       await db.query(
@@ -217,8 +229,8 @@ export async function channelStatus(
     report.channels = configured.map((id) => {
       const route = observed?.routes.find((item) => item.id === id);
       const children = (threadsByParent.get(id) ?? []).map((thread) => thread.channel_id);
-      const forum = route?.type === 15 || children.length > 0;
-      const rows = (forum ? children : [id]).map(endpoint);
+      const forum = [15, 16].includes(route?.type) || (!route && children.length > 0);
+      const rows = (forum ? children : [id, ...children]).map(endpoint);
       const blockers = [
         ...new Set(
           rows.flatMap((row) =>
@@ -235,7 +247,13 @@ export async function channelStatus(
       return {
         channelId: id,
         name: route?.name ?? null,
-        type: forum ? "forum" : route ? "text" : "unobserved",
+        type: forum
+          ? "forum"
+          : [2, 13].includes(route?.type)
+            ? "voice-text"
+            : route
+              ? "text"
+              : "unobserved",
         configured: true,
         activeEndpoints: rows.filter((row) => row.active).length,
         readState: forum

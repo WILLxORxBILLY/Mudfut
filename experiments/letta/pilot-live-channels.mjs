@@ -1,4 +1,4 @@
-import { replyChannels, sourceRecord } from "./pilot-store.mjs";
+import { replyChannels, sourceRecord, snowflake } from "./pilot-store.mjs";
 import { DiscordReadUnavailable } from "./pilot-discord.mjs";
 
 export function liveSource(message, config) {
@@ -64,34 +64,75 @@ export async function pollLiveChannels(
   };
 }
 
+export function discoveryBoundary(serverTime) {
+  if (!Number.isSafeInteger(serverTime) || serverTime < 1420070400000)
+    throw new Error("Invalid Discord enrollment clock");
+  // HTTP Date has second precision: retain that whole boundary second rather than
+  // dropping a first post. At most that one second may overlap pre-activation traffic.
+  return ((BigInt(serverTime) - 1420070400000n) << 22n).toString();
+}
+
 export async function liveChannelPlan(discord, config) {
-  const channels = await Promise.all(replyChannels(config).map((id) => discord.channel(id)));
-  if (
-    channels.some(
-      (c, index) =>
-        c.id !== replyChannels(config)[index] ||
-        c.guild_id !== config.guildId ||
-        ![0, 5, 15].includes(c.type),
+  const supported = [0, 2, 5, 13, 15, 16];
+  const threadParents = [0, 5, 15, 16];
+  const load = async () => {
+    const channels =
+      config.replyScope === "guild"
+        ? await discord.guildChannels(config.guildId)
+        : await Promise.all(replyChannels(config).map((id) => discord.channel(id)));
+    if (
+      !Array.isArray(channels) ||
+      channels.some(
+        (c, index) =>
+          !snowflake(c?.id) ||
+          c.guild_id !== config.guildId ||
+          (config.replyScope !== "guild" &&
+            (c.id !== replyChannels(config)[index] || !supported.includes(c.type))),
+      ) ||
+      new Set(channels.map((c) => c.id)).size !== channels.length
     )
-  )
-    throw new Error(
-      "Live routes must be text, announcement or forum channels in the configured guild",
-    );
-  const forumIds = channels.filter((c) => c.type === 15).map((c) => c.id);
-  const textIds = channels.filter((c) => c.type !== 15).map((c) => c.id);
+      throw new Error("Live routes must be message-capable channels in the configured guild");
+    return channels.filter((c) => supported.includes(c.type));
+  };
+  const observedTime = discord.serverTime?.();
+  const sinceId = observedTime === undefined ? undefined : discoveryBoundary(observedTime);
+  let channels = await load();
   return {
-    routes: channels.map(({ id, name, type }) => ({ id, name, type })),
-    forumIds,
+    get routes() {
+      return channels.map(({ id, name, type, guild_id }) => ({ id, name, type, guild_id }));
+    },
     async discover() {
-      if (!forumIds.length) return { channelIds: textIds, threads: [] };
-      const { threads } = await discord.activeThreads(config.guildId);
+      if (config.replyScope === "guild") channels = await load();
+      const parents = channels.filter((c) => threadParents.includes(c.type));
+      const parentIds = parents.map((c) => c.id);
+      const { threads } = parentIds.length
+        ? await discord.activeThreads(config.guildId)
+        : { threads: [] };
       if (!Array.isArray(threads)) throw new Error("Invalid Discord thread discovery response");
-      const selected = threads.filter((t) => forumIds.includes(t.parent_id));
-      if (selected.some((t) => t.guild_id !== config.guildId || t.type !== 11))
-        throw new Error("Forum thread identity mismatch");
-      // ponytail: poll active discussions; archived discussions resume at their durable
-      // cursor when reopened. Add archived-thread reconciliation for offline-only activity.
-      return { channelIds: [...textIds, ...selected.map((t) => t.id)], threads: selected };
+      const selected = threads.filter((t) => parentIds.includes(t?.parent_id));
+      if (
+        selected.some(
+          (t) =>
+            !snowflake(t.id) ||
+            t.guild_id !== config.guildId ||
+            ![10, 11, 12].includes(t.type) ||
+            (t.type === 10 && !parents.some((c) => c.id === t.parent_id && c.type === 5)) ||
+            (t.type === 12 && !parents.some((c) => c.id === t.parent_id && c.type === 0)) ||
+            (t.type === 11 &&
+              !parents.some((c) => c.id === t.parent_id && [0, 15, 16].includes(c.type))),
+        ) ||
+        new Set(selected.map((t) => t.id)).size !== selected.length
+      )
+        throw new Error("Live thread identity mismatch");
+      const channelIds = [
+        ...channels.filter((c) => ![15, 16].includes(c.type)).map((c) => c.id),
+        ...selected.map((t) => t.id),
+      ];
+      if (new Set(channelIds).size !== channelIds.length)
+        throw new Error("Duplicate live endpoint");
+      // Discord's response clock sets the durable enrollment boundary; local clock skew
+      // must not discard first posts. Archived threads resume when active again.
+      return { channelIds, threads: selected, routes: this.routes, parentIds, sinceId };
     },
   };
 }

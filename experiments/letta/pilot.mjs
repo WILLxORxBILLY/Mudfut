@@ -19,7 +19,12 @@ import { retryableFailure, boundedCleanup } from "./pilot-supervisor.mjs";
 import { pilotModel, record } from "./pilot-model.mjs";
 import { durableCandidate, isCorrectionRequest, correctionReporterIds } from "./pilot-reply.mjs";
 import { answerKnowledgeCommand } from "./pilot-knowledge-command.mjs";
-import { pollLiveChannels, liveSource, liveChannelPlan } from "./pilot-live-channels.mjs";
+import {
+  pollLiveChannels,
+  liveSource,
+  liveChannelPlan,
+  discoveryBoundary,
+} from "./pilot-live-channels.mjs";
 import { timingTrace } from "./pilot-timing.mjs";
 import { currentHistoryEpisode, historyQueue } from "./pilot-history.mjs";
 import { operatorRequests } from "./pilot-requests.mjs";
@@ -117,13 +122,15 @@ try {
   } else {
     const discord = discordTransport((await privateFile("discord-token")).trim(), record);
     const bot = await discord.me();
+    const store = await pilotStore(db, config, {
+      discoverySince: discoveryBoundary(discord.serverTime()),
+    });
     const channelPlan = await liveChannelPlan(discord, config);
     const polls = channelPollStatus(config, channelPlan.routes, {
       initial: await optionalJson("channel-polls.json"),
       save: (snapshot) => saveJson(join(state, "channel-polls.json"), snapshot),
     });
     let liveConfig = config;
-    const store = await pilotStore(db, config);
     knowledge = await communityKnowledge(db);
     try {
       knowledgeManifest = validateArchiveManifest(
@@ -217,7 +224,8 @@ try {
         await polls.discoveryFailed(error);
         throw error;
       }
-      await store.registerThreads(discovered.threads, channelPlan.forumIds);
+      await store.registerChannels(discovered.routes, discovered.sinceId);
+      await store.registerThreads(discovered.threads, discovered.parentIds);
       liveConfig = { ...config, liveChannelIds: discovered.channelIds };
       const outcome = await pollLiveChannels(
         store,

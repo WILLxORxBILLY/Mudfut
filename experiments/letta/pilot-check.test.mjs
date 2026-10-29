@@ -19,7 +19,12 @@ import {
 } from "./pilot-discord.mjs";
 import { withLivePriority, livePriorityCheckpoint } from "./pilot-priority.mjs";
 import { retryableFailure } from "./pilot-supervisor.mjs";
-import { pollLiveChannels, liveSource, liveChannelPlan } from "./pilot-live-channels.mjs";
+import {
+  pollLiveChannels,
+  liveSource,
+  liveChannelPlan,
+  discoveryBoundary,
+} from "./pilot-live-channels.mjs";
 import { timingTrace } from "./pilot-timing.mjs";
 import { digest } from "./pilot-store.mjs";
 import {
@@ -1107,4 +1112,225 @@ test("forum discovery admits only current threads under configured parents", asy
     ),
     /Live routes/,
   );
+});
+
+test("guild discovery follows ordinary/private/announcement threads and newly created channels", async () => {
+  const text = "222222222222222230",
+    news = "222222222222222231",
+    forum = "222222222222222232";
+  const voice = "222222222222222233",
+    media = "222222222222222234";
+  let channels = [
+    [config.channelId, 0],
+    [text, 0],
+    [news, 5],
+    [forum, 15],
+    [voice, 2],
+    [media, 16],
+    ["222222222222222239", 4],
+  ].map(([id, type]) => ({ id, type, guild_id: config.guildId }));
+  let threads = [
+    { id: "555555555555555610", parent_id: text, type: 11 },
+    { id: "555555555555555611", parent_id: text, type: 12 },
+    { id: "555555555555555612", parent_id: news, type: 10 },
+    { id: "555555555555555613", parent_id: forum, type: 11 },
+    { id: "555555555555555614", parent_id: media, type: 11 },
+  ].map((t) => ({ ...t, guild_id: config.guildId }));
+  const discord = {
+    guildChannels: async () => channels,
+    activeThreads: async () => ({ threads }),
+    serverTime: () => Date.parse("2026-10-29T20:00:00Z"),
+  };
+  const scope = { ...config, replyScope: "guild" };
+  const plan = await liveChannelPlan(discord, scope);
+  const first = await plan.discover();
+  assert.deepEqual(first.channelIds, [
+    config.channelId,
+    text,
+    news,
+    voice,
+    ...threads.map((t) => t.id),
+  ]);
+  assert.equal(first.sinceId, ((BigInt(discord.serverTime()) - 1420070400000n) << 22n).toString());
+  channels.push({ id: "222222222222222240", type: 13, guild_id: config.guildId });
+  assert((await plan.discover()).channelIds.includes("222222222222222240"));
+  threads[0].guild_id = "111111111111111119";
+  await assert.rejects(plan.discover(), /identity mismatch/);
+  threads = [];
+  channels[0].guild_id = "111111111111111119";
+  await assert.rejects(plan.discover(), /Live routes/);
+  assert.throws(() => validateScope({ ...config, replyScope: "*" }), /reply scope/);
+});
+
+test("configured text routes discover their ordinary threads without a forum", async () => {
+  const thread = {
+    id: "555555555555555610",
+    parent_id: config.channelId,
+    guild_id: config.guildId,
+    type: 11,
+  };
+  const plan = await liveChannelPlan(
+    {
+      channel: async (id) => ({ id, guild_id: config.guildId, type: 0 }),
+      activeThreads: async () => ({ threads: [thread] }),
+    },
+    config,
+  );
+  assert.deepEqual((await plan.discover()).channelIds, [config.channelId, thread.id]);
+});
+
+test(
+  "guild enrollment retains work/cursors across restart and routes only registered guild endpoints",
+  { skip: process.env.CHECK_DATABASE !== "1" },
+  async () => {
+    const db = new pg.Client(JSON.parse(await readFile(join(state, "postgres.json"), "utf8")));
+    await db.connect();
+    const schema = "guild_routes_" + Date.now();
+    await db.query(`CREATE SCHEMA ${schema}`);
+    await db.query(`SET search_path TO ${schema}`);
+    const scope = { ...config, replyScope: "guild" },
+      text = "222222222222222230",
+      thread = "555555555555555610",
+      cutoff = "555555555555555600";
+    const routes = [config.channelId, text].map((id) => ({
+      id,
+      guild_id: config.guildId,
+      type: 0,
+    }));
+    try {
+      let store = await pilotStore(db, config, { discoverySince: a });
+      await store.cursor(a);
+      await db.query("SELECT pg_advisory_unlock(1560387,1127029)");
+      store = await pilotStore(db, scope, { discoverySince: cutoff });
+      assert.equal(
+        (await store.meta()).discovery_since,
+        cutoff,
+        "guild activation does not reuse the older configured boundary",
+      );
+      await assert.rejects(
+        liveChannelPlan(
+          {
+            guildChannels: async () => {
+              throw new Error("offline");
+            },
+          },
+          scope,
+        ),
+        /offline/,
+      );
+      await db.query("SELECT pg_advisory_unlock(1560387,1127029)");
+      store = await pilotStore(db, scope);
+      await store.beginDiscovery("555555555555555999");
+      assert.equal(
+        (await store.meta()).discovery_since,
+        cutoff,
+        "failed first discovery cannot move enrollment boundary",
+      );
+      await store.cursor(a);
+      await store.registerChannels(routes, cutoff);
+      await store.registerThreads(
+        [{ id: thread, parent_id: text, guild_id: config.guildId, type: 11 }],
+        [text],
+      );
+      let meta = await store.meta();
+      assert.equal(meta.cursors[config.channelId], a);
+      assert.equal(meta.cursors[text], cutoff);
+      assert.equal(meta.cursors[thread], cutoff);
+      const source = sourceRecord(
+        { ...message("555555555555555611"), channel_id: thread },
+        config.guildId,
+        thread,
+      );
+      await store.ingest(source, true);
+      await store.cursor(source.id, thread);
+      await db.query("SELECT pg_advisory_unlock(1560387,1127029)");
+      store = await pilotStore(db, scope);
+      assert.equal(
+        (await store.next()).replyTo,
+        source.id,
+        "dynamic thread pending work survives startup",
+      );
+      await store.registerChannels(routes, "555555555555555999");
+      const olderThread = "555555555555555400";
+      await store.registerThreads(
+        [{ id: olderThread, parent_id: text, guild_id: config.guildId, type: 12 }],
+        [text],
+      );
+      meta = await store.meta();
+      assert.equal(meta.discovery_since, cutoff);
+      assert.equal(meta.cursors[olderThread], cutoff, "late discovery never starts from zero");
+      assert.equal(meta.cursors[thread], source.id);
+      await assert.rejects(
+        store.registerChannels([{ ...routes[0], guild_id: "111111111111111119" }], cutoff),
+        /Invalid/,
+      );
+      await assert.rejects(
+        store.registerThreads(
+          [
+            {
+              id: "555555555555555620",
+              parent_id: "222222222222222299",
+              guild_id: config.guildId,
+              type: 11,
+            },
+          ],
+          ["222222222222222299"],
+        ),
+        /Invalid/,
+      );
+      assert.equal(await store.replyChannelAllowed("222222222222222299"), false);
+      await store.queueReply(source.id, "A thread reply");
+      let sends = 0;
+      await deliver(
+        store,
+        {
+          send: async (id, body) => {
+            sends++;
+            assert.equal(id, thread);
+            assert.equal(body.message_reference.channel_id, thread);
+            return { id: "555555555555555700" };
+          },
+        },
+        "444444444444444444",
+        config.channelId,
+        async () => {},
+      );
+      await deliver(
+        store,
+        {
+          send: async () => {
+            throw new Error("duplicate");
+          },
+        },
+        "444444444444444444",
+        config.channelId,
+        async () => {},
+      );
+      assert.equal(sends, 1);
+      const top = sourceRecord(
+        { ...message("555555555555555701"), channel_id: text },
+        config.guildId,
+        text,
+      );
+      await store.ingest(top, true);
+      await db.query("SELECT pg_advisory_unlock(1560387,1127029)");
+      store = await pilotStore(db, scope);
+      assert.equal((await store.next()).replyTo, top.id);
+      await db.query("SELECT pg_advisory_unlock(1560387,1127029)");
+      await assert.rejects(pilotStore(db, config), /persisted configuration/);
+    } finally {
+      await db.query("SELECT pg_advisory_unlock(1560387,1127029)");
+      await db.query("SET search_path TO public");
+      await db.query(`DROP SCHEMA ${schema} CASCADE`);
+      await db.end();
+    }
+  },
+);
+
+test("enrollment uses Discord time and includes the whole response boundary second", () => {
+  const ms = Date.parse("2026-10-29T00:00:00Z");
+  const id = BigInt(discoveryBoundary(ms));
+  assert.equal((id >> 22n) + 1420070400000n, BigInt(ms));
+  assert.ok(id < (BigInt(ms + 999) - 1420070400000n) << 22n);
+  assert.throws(() => discoveryBoundary(NaN), /clock/);
 });

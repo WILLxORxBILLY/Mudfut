@@ -108,9 +108,10 @@ proof; it uses your account and retains its results outside the repository.
 
 ## Limits
 
-An installation uses one shared agent and memory across its configured reply
-channels in one guild. Routes can include text and announcement channels and
-active public discussions under a forum; see [route setup](docs/INSTALL.md#before-inviting-real-conversation).
+An installation uses one shared agent and memory across its reply channels in
+one guild. Routes can be configured explicitly or discovered server-wide, including
+text and announcement channels, voice-channel text, and accessible active threads
+and forum discussions; see [route setup](docs/INSTALL.md#server-wide-replies).
 Historical review is bounded, and archive availability does not prove complete
 Discord coverage. An optional existing archive can be
 connected using [the archive contract](docs/ARCHIVE.md); a full-server archive

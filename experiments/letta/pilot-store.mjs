@@ -39,9 +39,19 @@ export const hasTextEvidence = (source) =>
 export const replyChannels = (config) =>
   config.replyChannelIds === undefined ? [config.channelId] : config.replyChannelIds;
 
+const liveEndpointSql = `(source->>'channelId'=ANY($2::text[])
+  OR EXISTS(SELECT 1 FROM pilot_live_channels c WHERE $3 AND c.guild_id=$1
+    AND c.channel_id=source->>'channelId' AND c.type NOT IN (15,16))
+  OR EXISTS(SELECT 1 FROM pilot_live_threads t WHERE t.channel_id=source->>'channelId'
+    AND t.guild_id=$1 AND (t.parent_id=ANY($2::text[])
+      OR EXISTS(SELECT 1 FROM pilot_live_channels c WHERE $3 AND c.guild_id=$1
+        AND c.channel_id=t.parent_id))))`;
+
 export function validateScope(config) {
   if (!config || !snowflake(config.guildId) || !snowflake(config.channelId))
     throw new Error("Invalid pilot guild/channel scope");
+  if (config.replyScope !== undefined && !["configured", "guild"].includes(config.replyScope))
+    throw new Error("Invalid pilot reply scope");
   const channels = replyChannels(config);
   if (
     !Array.isArray(channels) ||
@@ -104,8 +114,10 @@ export function sourceRecord(message, guildId, channelId) {
 
 // ponytail: channels share one serial memory writer and delivery queue. Throughput
 // is bounded by one model turn; add coordinated per-agent queues before adding writers.
-export async function pilotStore(db, config) {
+export async function pilotStore(db, config, { discoverySince } = {}) {
   validateScope(config);
+  if (discoverySince !== undefined && !snowflake(discoverySince))
+    throw new Error("Invalid Discord enrollment boundary");
   const lock = await db.query("SELECT pg_try_advisory_lock(1560387, 1127029) AS acquired");
   if (!lock.rows[0].acquired) throw new Error("Another pilot worker owns this database");
   await db.query(`
@@ -119,6 +131,8 @@ export async function pilotStore(db, config) {
       addressed boolean NOT NULL DEFAULT false);
     CREATE TABLE IF NOT EXISTS pilot_live_threads (
       channel_id text PRIMARY KEY, parent_id text NOT NULL, guild_id text NOT NULL);
+    CREATE TABLE IF NOT EXISTS pilot_live_channels (
+      channel_id text PRIMARY KEY, guild_id text NOT NULL, type integer NOT NULL);
     CREATE TABLE IF NOT EXISTS pilot_optouts (author_id text PRIMARY KEY);
     CREATE TABLE IF NOT EXISTS pilot_source_holds (
       source_id text PRIMARY KEY, reason text NOT NULL,
@@ -131,6 +145,7 @@ export async function pilotStore(db, config) {
       source_id text PRIMARY KEY, content text NOT NULL, epoch integer NOT NULL,
       status text NOT NULL DEFAULT 'ready', discord_id text,
       attempted_at timestamptz, error text, receipt jsonb);
+    ALTER TABLE pilot_meta ADD COLUMN IF NOT EXISTS discovery_since text;
     ALTER TABLE pilot_meta ADD COLUMN IF NOT EXISTS cursors jsonb NOT NULL DEFAULT '{}';
     ALTER TABLE pilot_meta ADD COLUMN IF NOT EXISTS invalid_sources text[] NOT NULL DEFAULT '{}';
     ALTER TABLE pilot_meta ADD COLUMN IF NOT EXISTS memory_version integer NOT NULL DEFAULT 1;
@@ -166,21 +181,29 @@ export async function pilotStore(db, config) {
   if (
     saved.guildId !== config.guildId ||
     saved.channelId !== config.channelId ||
+    (saved.replyScope === "guild" && config.replyScope !== "guild") ||
     replyChannels(saved).some((id) => !replyChannels(config).includes(id))
   )
     throw new Error(
       "Pilot live channel differs from persisted configuration; use a separate state/database",
     );
   await db.query(
-    `UPDATE pilot_sources SET learnable=false,learned=true WHERE source->>'guildId'<>$1 OR
-      NOT (source->>'channelId'=ANY($2::text[]) OR EXISTS(SELECT 1 FROM pilot_live_threads t
-        WHERE t.channel_id=source->>'channelId' AND t.guild_id=$1 AND t.parent_id=ANY($2::text[])))`,
-    [config.guildId, replyChannels(config)],
+    `UPDATE pilot_sources SET learnable=false,learned=true WHERE source->>'guildId'<>$1
+      OR NOT ${liveEndpointSql}`,
+    [config.guildId, replyChannels(config), config.replyScope === "guild"],
   );
   // Preserve the original cursor while migrating to independent channel progress.
   await db.query(`UPDATE pilot_meta SET cursors=jsonb_set(cursors,ARRAY[scope->>'channelId'],to_jsonb(cursor))
     WHERE cursor IS NOT NULL AND NOT (cursors ? (scope->>'channelId'))`);
-  await db.query("UPDATE pilot_meta SET scope=$1", [config]);
+  // Scope and enrollment commit together: a failed first discovery/restart must
+  // retain this boundary, while configured-to-guild expansion starts a fresh one.
+  await db.query(
+    `UPDATE pilot_meta SET scope=$1,
+    discovery_since=CASE WHEN scope->>'replyScope' IS DISTINCT FROM 'guild'
+      AND $1::jsonb->>'replyScope'='guild' THEN $2::text
+      ELSE coalesce(discovery_since,$2::text) END`,
+    [config, discoverySince ?? null],
+  );
   const reclassified = (
     await db.query(`UPDATE pilot_sources SET addressed=true,learned=false
     WHERE NOT addressed AND NOT deleted AND source->>'replyTo' IN
@@ -311,13 +334,11 @@ export async function pilotStore(db, config) {
       await db.query(
         `SELECT s.*, ${generationAttempts} FROM pilot_sources s WHERE NOT deleted AND addressed AND learnable AND NOT evidence_excluded
         AND ${generationReady}
-        AND source->>'guildId'=$1 AND (source->>'channelId'=ANY($2::text[])
-          OR EXISTS(SELECT 1 FROM pilot_live_threads t WHERE t.channel_id=source->>'channelId'
-            AND t.guild_id=$1 AND t.parent_id=ANY($2::text[])))
+        AND source->>'guildId'=$1 AND ${liveEndpointSql}
         AND NOT EXISTS(SELECT 1 FROM pilot_source_holds h WHERE h.source_id=s.id)
         AND NOT EXISTS(SELECT 1 FROM pilot_outbox o WHERE o.source_id=s.id)
         ORDER BY id::numeric LIMIT 1`,
-        [config.guildId, replyChannels(config)],
+        [config.guildId, replyChannels(config), config.replyScope === "guild"],
       )
     ).rows[0];
     if (direct) return { rows: [direct], replyTo: direct.id };
@@ -649,18 +670,58 @@ export async function pilotStore(db, config) {
         note: "Bot replies are conversational context, never evidence about members.",
       };
     },
+    async beginDiscovery(sinceId) {
+      if (!snowflake(sinceId)) throw new Error("Invalid Discord enrollment boundary");
+      await db.query("UPDATE pilot_meta SET discovery_since=coalesce(discovery_since,$1)", [
+        sinceId,
+      ]);
+    },
+    async registerChannels(channels, sinceId) {
+      if (
+        !snowflake(sinceId) ||
+        !Array.isArray(channels) ||
+        channels.some(
+          (c) =>
+            !snowflake(c.id) ||
+            c.guild_id !== config.guildId ||
+            ![0, 2, 5, 13, 15, 16].includes(c.type) ||
+            (config.replyScope !== "guild" && !replyChannels(config).includes(c.id)),
+        )
+      )
+        throw new Error("Invalid discovered live channels");
+      await transaction(async () => {
+        await db.query("UPDATE pilot_meta SET discovery_since=coalesce(discovery_since,$1)", [
+          sinceId,
+        ]);
+        const current = await meta();
+        for (const channel of channels) {
+          await db.query(
+            `INSERT INTO pilot_live_channels(channel_id,guild_id,type) VALUES($1,$2,$3)
+            ON CONFLICT(channel_id) DO UPDATE SET type=EXCLUDED.type WHERE pilot_live_channels.guild_id=EXCLUDED.guild_id`,
+            [channel.id, config.guildId, channel.type],
+          );
+          // Preserve all existing cursors. New endpoints start at the durable activation
+          // boundary, including first posts in channels created after activation.
+          await db.query(
+            `UPDATE pilot_meta SET cursors=jsonb_set(cursors,ARRAY[$1::text],to_jsonb($2::text))
+            WHERE NOT(cursors ? $1)`,
+            [channel.id, current.discovery_since],
+          );
+        }
+      });
+    },
     async registerThreads(threads, forumIds) {
       if (
-        !forumIds.every((id) => replyChannels(config).includes(id)) ||
+        !(await Promise.all(forumIds.map((id) => this.replyChannelAllowed(id)))).every(Boolean) ||
         threads.some(
           (t) =>
             !snowflake(t.id) ||
             !forumIds.includes(t.parent_id) ||
             t.guild_id !== config.guildId ||
-            t.type !== 11,
+            ![10, 11, 12].includes(t.type),
         )
       )
-        throw new Error("Invalid live forum thread");
+        throw new Error("Invalid live thread");
       await transaction(async () => {
         const current = await meta();
         for (const thread of threads) {
@@ -670,10 +731,10 @@ export async function pilotStore(db, config) {
             [thread.id, thread.parent_id, config.guildId],
           );
           // A newly discovered discussion after forum activation starts live, including its first post.
-          if (added.rowCount && current.cursors[thread.parent_id])
+          if (added.rowCount && current.cursors[thread.parent_id] && !current.cursors[thread.id])
             await db.query(
-              "UPDATE pilot_meta SET cursors=jsonb_set(cursors,ARRAY[$1::text],to_jsonb('00000000000000000'::text))",
-              [thread.id],
+              "UPDATE pilot_meta SET cursors=jsonb_set(cursors,ARRAY[$1::text],to_jsonb($2::text))",
+              [thread.id, current.discovery_since ?? "00000000000000000"],
             );
         }
         for (const id of forumIds)
@@ -689,8 +750,11 @@ export async function pilotStore(db, config) {
         Boolean(
           (
             await db.query(
-              "SELECT 1 FROM pilot_live_threads WHERE channel_id=$1 AND guild_id=$2 AND parent_id=ANY($3::text[])",
-              [channelId, config.guildId, replyChannels(config)],
+              `SELECT 1 FROM pilot_live_threads t WHERE channel_id=$1 AND guild_id=$2
+                AND (parent_id=ANY($3::text[]) OR ($4 AND EXISTS(SELECT 1 FROM pilot_live_channels c
+                  WHERE c.channel_id=t.parent_id AND c.guild_id=$2)))
+               UNION ALL SELECT 1 FROM pilot_live_channels WHERE channel_id=$1 AND guild_id=$2 AND $4`,
+              [channelId, config.guildId, replyChannels(config), config.replyScope === "guild"],
             )
           ).rowCount,
         )

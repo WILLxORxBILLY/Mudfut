@@ -91,6 +91,11 @@ export function discordTransport(token, record) {
   // Disable the REST library's automatic 5xx retry: a POST may have succeeded.
   // Its rate-limit scheduling remains enabled. Durable outbox owns send recovery.
   const rest = new REST({ version: "10", retries: 0, timeout: 30000 }).setToken(token);
+  let serverTime;
+  rest.on("response", (_request, response) => {
+    const at = Date.parse(response.headers.get("date"));
+    if (Number.isFinite(at)) serverTime = at;
+  });
   const read = (route, options) =>
     retryRead(() => discordRead(() => rest.get(route, options)), record);
   async function after(channelId, afterId) {
@@ -110,6 +115,11 @@ export function discordTransport(token, record) {
   }
   return {
     me: () => read(Routes.user()),
+    guildChannels: (guildId) => read(Routes.guildChannels(guildId)),
+    serverTime: () => {
+      if (!Number.isFinite(serverTime)) throw new Error("Discord server time unavailable");
+      return serverTime;
+    },
     activeThreads: (guildId) => read(Routes.guildActiveThreads(guildId)),
     channel: (id) => read(Routes.channel(id)),
     recent: (id, limit = 20) =>

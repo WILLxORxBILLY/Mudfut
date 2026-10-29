@@ -142,3 +142,28 @@ new discussions discovered after activation include their first post. Reopened
 discussions resume their saved cursor. Activity created and archived entirely
 while the worker is offline remains archive material and is not automatically
 replayed as live replies. The configured forum itself is not a message endpoint.
+
+### Server-wide replies
+
+Set `"replyScope": "guild"` in private `pilot.json` to discover all message-capable
+channels in the configured guild, including new channels. Keep `channelId` and any
+existing `replyChannelIds` unchanged when expanding an existing installation.
+Text and announcement threads, accessible private threads, forum/media posts and
+voice/stage text chats are included. Categories and direct messages are not routes.
+Discord permissions still apply: View Channel, Read Message History, Send Messages,
+and Send Messages in Threads are required where applicable. Private threads must
+be accessible to the bot. This does not grant Administrator or create threads.
+
+The bot retains its mention/reply behavior. Existing cursors survive; new endpoints
+start at a durable boundary derived from Discord's clock, retained even if
+initial discovery fails. Older history is not replayed; HTTP Date has one-second
+precision, so messages in the boundary second are included to avoid dropping a
+first post. A new thread's first post after activation is included. Archived threads
+resume when active again; this polling mode cannot discover activity created and
+archived entirely between polls. Discovery failures retain prior state and fail
+closed; individual permission-denied reads remain visible in status.
+
+Stop and preflight the installation before enabling this mode. Confirm no other
+runtime replies anywhere in the guild. Reverting guild mode requires a reviewed
+pending-work migration; do not erase receipts or silently narrow persisted scope.
+Historical archive collection remains separately configured.
