@@ -542,3 +542,59 @@ test("combined person/topic recall excludes unrelated matches while linked contr
     "Topic-only recall keeps other people on that topic",
   );
 });
+
+test("retained correction-command quotes are withheld from current and historical reads", async () => {
+  const command = source(
+    "109",
+    "!knowledge correct https://discord.com/channels/111111111111111111/222222222222222222/555555555555555101 A narrower interpretation.",
+    "2026-03-01T12:00:00Z",
+  );
+  const legacy = { ...entry("legacy-correction", command), updated: "2026-08-01T00:00:00Z" };
+  const available = new Map([...sources, [command.id, command]]);
+  const saved = snapshot([legacy]);
+  await assert.rejects(
+    () => readUnderstanding(saved, { keys: [legacy.key] }, available, async () => {}),
+    /review context, not memory evidence/,
+  );
+  assert.deepEqual(decodeUnderstanding(saved.content), [legacy]);
+  const row = {
+    id: "legacy-version",
+    is_current: false,
+    key: legacy.key,
+    entry: legacy,
+    source_ids: [command.id],
+    tombstone: false,
+    audit: {},
+  };
+  const historical = memoryHistoryEvidence([row], available, [])[0];
+  assert.equal(historical.entry, null);
+  assert.match(historical.status, /not usable as evidence/);
+  assert.ok(!JSON.stringify(historical).includes(command.content));
+  const corrected = {
+    ...entry("corrected", first),
+    updated: "2026-08-02T00:00:00Z",
+    sourceIds: [first.id, command.id],
+    lineage: { sourceIds: [command.id] },
+  };
+  const result = await readUnderstanding(
+    snapshot([corrected]),
+    { keys: [corrected.key] },
+    available,
+    async () => {},
+  );
+  assert.deepEqual(result.entries, [corrected]);
+  const correctedHistory = memoryHistoryEvidence(
+    [
+      {
+        ...row,
+        key: corrected.key,
+        entry: corrected,
+        source_ids: [first.id, command.id],
+        is_current: true,
+      },
+    ],
+    available,
+    [corrected],
+  )[0];
+  assert.equal(correctedHistory.entry.key, corrected.key);
+});
