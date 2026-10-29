@@ -2425,7 +2425,7 @@ export function renderKnowledgeView(document, { page = 1 } = {}) {
     };
     wrap("interpretation", entry.interpretation);
     if (entry.kind) atomic("kind", entry.kind);
-    atomic("confidence", entry.uncertainty === "unknown" ? "unassessed" : entry.uncertainty);
+    atomic("uncertainty", entry.uncertainty === "unknown" ? "unassessed" : entry.uncertainty);
     if (entry.episodeKey) atomic("episode", entry.episodeKey);
     if (entry.competingWith?.length) atomic("competing readings", entry.competingWith.length);
     if (entry.supersedes) atomic("lineage", "supersedes an earlier candidate");
@@ -2487,7 +2487,7 @@ export function renderKnowledgeView(document, { page = 1 } = {}) {
     ];
     const context = [
       ...(entry.kind ? [`kind: ${entry.kind}`] : []),
-      `confidence: ${entry.uncertainty === "unknown" ? "unassessed" : entry.uncertainty}`,
+      `uncertainty: ${entry.uncertainty === "unknown" ? "unassessed" : entry.uncertainty}`,
       ...(entry.episodeKey ? [`episode: ${entry.episodeKey}`] : []),
       ...lineage,
       ...qualifications.map((qualification) => `note: ${qualification}`),
