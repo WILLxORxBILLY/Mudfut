@@ -273,3 +273,128 @@ test("correction reporter lookup deduplicates messages without losing cases", ()
     ["one", "two"],
   );
 });
+
+test("retrieved correction requests never become sourced memory while ordinary evidence stays usable", async () => {
+  const { memoryPatchSession, encodeUnderstanding, decodeUnderstanding } =
+    await import("./pilot-memory.mjs");
+  const { digest } = await import("./pilot-store.mjs");
+  const guildId = "111111111111111111",
+    channelId = "222222222222222222",
+    authorId = "333333333333333333";
+  const original = {
+    id: "555555555555555501",
+    guildId,
+    channelId,
+    authorId,
+    content: "The trip is on Friday.",
+    createdAt: "2026-10-16T12:00:00Z",
+    replyTo: null,
+    url: "https://discord.com/channels/111111111111111111/222222222222222222/555555555555555501",
+  };
+  const report = {
+    ...original,
+    id: "555555555555555502",
+    content:
+      "!knowledge correct https://discord.com/channels/111111111111111111/222222222222222222/555555555555555501 The trip was cancelled.",
+  };
+  const content = encodeUnderstanding([]),
+    initial = { content, revision: digest(content) };
+  const supplied = new Map([[original.id, original]]);
+  const correctionIds = new Set();
+  const session = memoryPatchSession(initial, supplied, [original.id], (patch) =>
+    rejectCorrectionRequestEvidence(patch, correctionIds),
+  );
+  supplied.set(report.id, report); // Retrieved after the turn and guard were created.
+  const entry = (key, source) => ({
+    key,
+    kind: "statement",
+    subjects: [authorId],
+    statement: `A ${key} statement`,
+    importance: 1,
+    evidence: [{ messageId: source.id, quote: source.content }],
+  });
+  const observations = [
+    { messageId: original.id, decision: "retained", reason: "Source supports the entry." },
+  ];
+  const rejected = session.apply({
+    expectedRevision: initial.revision,
+    upsert: [entry("good", original), entry("bad", report)],
+    remove: [],
+    observations,
+  });
+  assert.match(rejected.status, /needs_repair/);
+  assert.ok(rejected.errors.some((error) => /review context, not memory evidence/.test(error)));
+  assert.deepEqual(
+    rejected.preservedProposals.map((proposal) => proposal.key),
+    ["good"],
+  );
+  assert.equal(session.complete, false);
+  const accepted = session.apply({
+    expectedRevision: initial.revision,
+    upsert: [],
+    remove: [],
+    observations,
+  });
+  assert.match(accepted.status, /staged/);
+  assert.deepEqual(
+    decodeUnderstanding(session.draft.content).map((item) => item.key),
+    ["good"],
+  );
+});
+
+test("correction request observation targets are identified without dropping their decisions", () => {
+  const source = {
+    id: "555555555555555502",
+    content:
+      "<@444444444444444444> !KNOWLEDGE CORRECT https://discord.com/channels/111111111111111111/222222222222222222/555555555555555501 The trip was cancelled.",
+  };
+  const batch = { rows: [{ id: source.id, source }], replyTo: null, context: {} };
+  assert.deepEqual([...correctionRequestSourceIds(batch)], [source.id]);
+  const contract = turnInput(batch, "revision", "444444444444444444").memoryContract;
+  assert.deepEqual(contract.observationTargetIds, [source.id]);
+  assert.match(contract.instruction, /review context, not community evidence/);
+});
+
+test("a correction command target requires an irrelevant decision even with legacy memory", async () => {
+  const { memoryPatchSession, encodeUnderstanding, decodeUnderstanding } =
+    await import("./pilot-memory.mjs");
+  const { digest } = await import("./pilot-store.mjs");
+  const source = {
+    id: "555555555555555502",
+    content:
+      "!knowledge correct https://discord.com/channels/111111111111111111/222222222222222222/555555555555555501 An older request.",
+  };
+  const prior = {
+    key: "legacy",
+    kind: "statement",
+    subjects: ["333333333333333333"],
+    statement: "A preserved legacy entry",
+    importance: 1,
+    evidence: [{ messageId: source.id, quote: "An older request." }],
+    updated: "2026-10-16T12:00:00Z",
+  };
+  const content = encodeUnderstanding([prior]);
+  const initial = { content, revision: digest(content) };
+  const session = memoryPatchSession(initial, new Map([[source.id, source]]), [source.id]);
+  const observation = (decision) => ({
+    messageId: source.id,
+    decision,
+    reason: "Review request is not evidence.",
+  });
+  const rejected = session.apply({
+    expectedRevision: initial.revision,
+    upsert: [],
+    remove: [],
+    observations: [observation("retained")],
+  });
+  assert.match(rejected.status, /needs_repair/);
+  assert.ok(rejected.errors.some((error) => /review context, not memory evidence/.test(error)));
+  const accepted = session.apply({
+    expectedRevision: initial.revision,
+    upsert: [],
+    remove: [],
+    observations: [observation("irrelevant")],
+  });
+  assert.match(accepted.status, /staged/);
+  assert.deepEqual(decodeUnderstanding(session.draft.content), [prior]);
+});
