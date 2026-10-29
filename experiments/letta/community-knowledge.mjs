@@ -5,6 +5,7 @@ import {
   snowflake,
   sourceFingerprint,
 } from "./pilot-store.mjs";
+import { isCorrectionRequest } from "./pilot-memory.mjs";
 
 const MAX_ANNOTATION_SOURCES = 24;
 const manifestTopicQualification =
@@ -28,18 +29,34 @@ const stable = (value) => {
     .join(",")}}`;
 };
 const sha256 = (value) => createHash("sha256").update(stable(value), "utf8").digest("hex");
+export function annotationUsesCorrectionEvidence(candidate, sourceForId) {
+  const ids = [
+    ...candidate.sourceIds,
+    ...(candidate.claims ?? []).flatMap((claim) =>
+      claim.anchors
+        .filter((anchor) => anchor.relation !== "context")
+        .map((anchor) => anchor.sourceId),
+    ),
+  ];
+  return ids.some((id) => isCorrectionRequest(sourceForId(id)));
+}
 const sourceQuotesMatch = (candidate, sources) =>
   (candidate.sourceQuotes ?? []).every((quote) =>
     sources.get(quote.sourceId)?.source.content.includes(quote.quote),
   );
-const viewQuotesMatch = (document) =>
+const viewEvidenceSafe = (document) =>
   Array.isArray(document?.entries) &&
-  document.entries.every(
-    (entry) =>
-      entry &&
-      Array.isArray(entry.sources) &&
-      (entry.contextSources === undefined || Array.isArray(entry.contextSources)) &&
-      [...entry.sources, ...(entry.contextSources ?? [])].every(
+  document.entries.every((entry) => {
+    if (
+      !entry ||
+      !Array.isArray(entry.sources) ||
+      (entry.contextSources !== undefined && !Array.isArray(entry.contextSources)) ||
+      (entry.claims !== undefined && !Array.isArray(entry.claims))
+    )
+      return false;
+    const packets = [...entry.sources, ...(entry.contextSources ?? [])];
+    if (
+      !packets.every(
         (source) =>
           source &&
           (source.quoteSpans === undefined ||
@@ -49,8 +66,23 @@ const viewQuotesMatch = (document) =>
                   source.quoteSpans.every(
                     (quote) => typeof quote === "string" && source.exactQuote.includes(quote),
                   ))))),
-      ),
-  );
+      )
+    )
+      return false;
+    if (
+      (entry.claims ?? []).some(
+        (claim) => !Array.isArray(claim?.anchors) || claim.anchors.some((anchor) => !anchor),
+      )
+    )
+      return false;
+    const byId = new Map(
+      packets.map((source) => [source.sourceId, { content: source.exactQuote }]),
+    );
+    return !annotationUsesCorrectionEvidence(
+      { sourceIds: entry.sources.map((source) => source.sourceId), claims: entry.claims },
+      (id) => byId.get(id),
+    );
+  });
 // node-postgres accepts objects today, but making the JSON boundary explicit keeps
 // JSONB writes independent of its prepareValue implementation and prevents the
 // manifest path from regressing into the original PostgreSQL JSON failure.
@@ -1269,7 +1301,7 @@ export async function communityKnowledge(db) {
       )
     ).rows;
     const annotations = new Map();
-    const unsupportedQuotes = new Set();
+    const unsupportedEvidence = new Set();
     for (const row of rows) {
       const candidate = validateAnnotation(parsed(row.candidate));
       const matches =
@@ -1306,7 +1338,11 @@ export async function communityKnowledge(db) {
           (quote) => quote.sourceId === row.source_id && !source.content.includes(quote.quote),
         )
       )
-        unsupportedQuotes.add(annotationKey);
+        unsupportedEvidence.add(annotationKey);
+      if (
+        annotationUsesCorrectionEvidence(candidate, (id) => (id === row.source_id ? source : null))
+      )
+        unsupportedEvidence.add(annotationKey);
       const replyTo = source.replyTo ?? null;
       const episode = parsed(row.episode);
       const selectedEpisodeSources = new Set([...episode.sourceIds, ...episode.contextIds]);
@@ -1353,7 +1389,7 @@ export async function communityKnowledge(db) {
       annotations.set(annotationKey, entry);
     }
     const entries = [...annotations]
-      .filter(([key]) => !unsupportedQuotes.has(key))
+      .filter(([key]) => !unsupportedEvidence.has(key))
       .map(([, entry]) => entry);
     if (target === "history") {
       const earliestSourceTime = (entry) =>
@@ -1371,12 +1407,12 @@ export async function communityKnowledge(db) {
     const document = {
       target,
       key,
-      status: unsupportedQuotes.size
+      status: unsupportedEvidence.size
         ? "candidate interpretations with incomplete source evidence"
         : "candidate interpretations with cited current sources",
       entries,
-      ...(unsupportedQuotes.size
-        ? { incomplete: true, unavailableCandidateCount: unsupportedQuotes.size }
+      ...(unsupportedEvidence.size
+        ? { incomplete: true, unavailableCandidateCount: unsupportedEvidence.size }
         : {}),
     };
     const documentDigest = sha256(document);
@@ -1583,6 +1619,8 @@ export async function communityKnowledge(db) {
         throw new Error("Community annotation source is outside the manifest episode channel");
       if (!sourceQuotesMatch(annotation, sources))
         throw new Error("Community annotation source quote does not match its current source");
+      if (annotationUsesCorrectionEvidence(annotation, (id) => sources.get(id)?.source))
+        throw new Error("Correction request is review context, not annotation evidence");
       for (const claim of annotation.claims ?? [])
         for (const anchor of claim.anchors) {
           const source = sources.get(anchor.sourceId)?.source;
@@ -1769,6 +1807,8 @@ export async function communityKnowledge(db) {
       )
         return stale("source-generation");
       if (!sourceQuotesMatch(candidate, sources)) return stale("source-quote");
+      if (annotationUsesCorrectionEvidence(candidate, (id) => sources.get(id)?.source))
+        return stale("correction-request-evidence");
       const annotationId = work.annotationId ?? candidate.id ?? work.id.replaceAll("-", "");
       const previous = (
         await db.query(
@@ -1866,7 +1906,7 @@ export async function communityKnowledge(db) {
         current.revision !== prepared?.viewRevision ||
         current.document_digest !== prepared?.documentDigest ||
         sha256(prepared?.document) !== prepared?.documentDigest ||
-        !viewQuotesMatch(prepared?.document)
+        !viewEvidenceSafe(prepared?.document)
       ) {
         await receipt(db, "stale-export", {
           target: prepared?.target ?? null,

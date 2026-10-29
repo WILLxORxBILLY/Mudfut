@@ -39,6 +39,8 @@ export function memoryEvidence(entries, sources) {
       const source = sources.get(evidence.messageId);
       if (!source || source.id !== evidence.messageId || !source.content.includes(evidence.quote))
         throw new Error(`Memory evidence changed or disappeared: ${evidence.messageId}`);
+      if (isCorrectionRequest(source))
+        throw new Error("Correction request notes are review context, not memory evidence");
       references.set(evidence.messageId, {
         messageId: source.id,
         authorId: source.authorId,
@@ -65,9 +67,13 @@ export function memoryHistorySourceIds(rows) {
 // Expose only this key's lineage, never a whole commit's unrelated or stale text.
 export function memoryHistoryEvidence(rows, sources, currentEntries) {
   return rows.map((row) => {
+    const correctionEvidence = row.entry?.evidence?.some((e) =>
+      isCorrectionRequest(sources.get(e.messageId)),
+    );
     const valid =
       row.entry &&
       !row.tombstone &&
+      !correctionEvidence &&
       memoryHistorySourceIds([row]).every((id) => sources.get(id)?.id === id) &&
       row.entry.evidence.every((e) => sources.get(e.messageId)?.content.includes(e.quote));
     const current = valid && row.is_current === true;
@@ -81,11 +87,13 @@ export function memoryHistoryEvidence(rows, sources, currentEntries) {
       at: row.created_at,
       tombstone: row.tombstone,
       entry: valid ? row.entry : null,
-      status: !valid
-        ? "source changed/deleted or tombstone; not usable as evidence"
-        : current
-          ? "current understanding; source quotes validate"
-          : "superseded understanding; source quotes still validate",
+      status: correctionEvidence
+        ? "correction request is review context; not usable as evidence"
+        : !valid
+          ? "source changed/deleted or tombstone; not usable as evidence"
+          : current
+            ? "current understanding; source quotes validate"
+            : "superseded understanding; source quotes still validate",
       lineage: {
         action: transition?.action ?? row.audit?.kind ?? "memory_patch",
         sourceIds: row.source_ids,

@@ -1,6 +1,9 @@
 import { sourceFingerprint } from "./pilot-store.mjs";
 import { decodeUnderstanding } from "./pilot-memory.mjs";
-import { annotationsFromUnderstanding } from "./community-knowledge.mjs";
+import {
+  annotationsFromUnderstanding,
+  annotationUsesCorrectionEvidence,
+} from "./community-knowledge.mjs";
 
 const idsMatch = (actual, expected) =>
   actual.length === expected.length && expected.every((id) => actual.includes(id));
@@ -104,6 +107,14 @@ export async function reconcilePendingHistoryDerivations(
   const projected = annotationsFromUnderstanding(entries, episode);
   if (!projected.length) return excluded("committed-memory-has-no-eligible-annotations");
   const sourcesById = new Map(selectedSources.map((source) => [source.id, source]));
+  const correctionEvidenceCount = projected.filter((annotation) =>
+    annotationUsesCorrectionEvidence(annotation, (id) => sourcesById.get(id)),
+  ).length;
+  if (correctionEvidenceCount)
+    return excluded("committed-memory-correction-request-evidence", {
+      projectedCount: projected.length,
+      correctionEvidenceCount,
+    });
   const invalidQuoteCount = projected.filter((annotation) =>
     (annotation.sourceQuotes ?? []).some(
       (quote) => !sourcesById.get(quote.sourceId)?.content.includes(quote.quote),
