@@ -234,7 +234,8 @@ const archive = {
   query: async (sql, args) => ({
     rows: sql.includes("SELECT m.message_id")
       ? args[2].map((message_id) => ({ message_id }))
-      : sql.includes("SELECT message_id,created_at FROM messages") && args[5] === "0"
+      : sql.includes("SELECT message_id,created_at::text AS created_at FROM messages") &&
+          args[5] === "0"
         ? [{ message_id: id(8), created_at: "2026-02-01T00:00:00Z" }]
         : [],
   }),
@@ -710,7 +711,8 @@ test(
       let automaticSelections = 0;
       const watchedArchive = {
         query: async (sql, args) => {
-          if (sql.includes("SELECT message_id,created_at FROM messages")) automaticSelections++;
+          if (sql.includes("SELECT message_id,created_at::text AS created_at FROM messages"))
+            automaticSelections++;
           return archive.query(sql, args);
         },
       };

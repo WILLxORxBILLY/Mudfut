@@ -141,7 +141,7 @@ function database() {
           });
       } else if (sql === "SELECT manifest FROM pilot_history_automation WHERE id=$1")
         return { rows: [cursors.get(args[0])] };
-      else if (sql.startsWith("SELECT * FROM pilot_history_automation"))
+      else if (sql.startsWith("SELECT id,manifest,cursor_at::text AS cursor_at"))
         return { rows: [...cursors.values()].filter((c) => !c.exhausted).slice(0, 1) };
       else if (sql.startsWith("SELECT * FROM pilot_history_episodes"))
         return { rows: [...episodes.values()].filter((e) => e.status === "queued").slice(0, 1) };
@@ -182,7 +182,7 @@ test("automatic admission durably queues unread work, deduplicates completed tar
     db.episodes.set("manual:done", { status: "done", read_ids: [String(firstId)] });
     const archive = {
       query: async (sql) => ({
-        rows: sql.includes("SELECT message_id,created_at FROM messages")
+        rows: sql.includes("SELECT message_id,created_at::text AS created_at FROM messages")
           ? [row(0, 0), row(1, 2)]
           : sql.includes("SELECT m.message_id")
             ? [{ message_id: String(firstId + 1n) }]
@@ -629,6 +629,80 @@ test(
       );
     } finally {
       await db.end();
+    }
+  },
+);
+
+test(
+  "automatic PostgreSQL cursors retain microseconds across a saved restart",
+  { skip: process.env.CHECK_DATABASE !== "1" },
+  async () => {
+    const { readFile } = await import("node:fs/promises");
+    const { randomUUID } = await import("node:crypto");
+    const { default: pg } = await import("pg");
+    const { state } = await import("./runtime.mjs");
+    const credentials = JSON.parse(await readFile(join(state, "postgres.json"), "utf8"));
+    const admin = new pg.Client(credentials);
+    await admin.connect();
+    const name = "mudfut_precision_" + randomUUID().replaceAll("-", "");
+    const directory = await mkdtemp(join(tmpdir(), "mudfut-precision-"));
+    let db;
+    try {
+      await admin.query(`CREATE DATABASE ${name}`);
+      db = new pg.Client({ ...credentials, database: name });
+      await db.connect();
+      await db.query(
+        await readFile(new URL("../../docs/archive-schema.sql", import.meta.url), "utf8"),
+      );
+      await db.query(`CREATE TABLE pilot_history_passes(id text PRIMARY KEY,manifest jsonb);
+      CREATE TABLE pilot_history_episodes(id text PRIMARY KEY,pass_id text,manifest jsonb,
+        status text DEFAULT 'queued',read_ids text[] DEFAULT '{}',context_ids text[] DEFAULT '{}',excluded jsonb);`);
+      const ids = [String(firstId), String(firstId + 1n), String(firstId + 2n)];
+      for (let i = 0; i < ids.length; i++)
+        await db.query(
+          `INSERT INTO messages(guild_id,channel_id,message_id,created_at,content,author_id,author_display_name,content_hash)
+        VALUES($1,$2,$3,$4,'A conversation','333333333333333333','Fictional member',repeat('a',64))`,
+          [guildId, channelId, ids[i], `2025-01-02T00:00:00.000${i + 1}00Z`],
+        );
+      await writeFile(
+        join(directory, "history-automation.json"),
+        JSON.stringify({ ...settings, maxMessages: 1 }),
+      );
+      const store = { db, ingest: async () => {}, remove: async () => {} };
+      const discord = {
+        channel: async (id) => ({ id, guild_id: guildId, type: 0 }),
+        recent: async () => [],
+        get: async (_channel, id) => ({
+          id,
+          channel_id: channelId,
+          author: { id: "333333333333333333", username: "Member" },
+          type: 0,
+          timestamp: "2025-01-02T00:00:00Z",
+          content: "A conversation",
+        }),
+      };
+      const queue = () => historyQueue(store, discord, {}, directory, async () => {}, db);
+      for (const expected of ids) {
+        const batch = await queue().next();
+        assert.deepEqual(
+          batch.rows.map((item) => item.id),
+          [expected],
+        );
+        await db.query("UPDATE pilot_history_episodes SET status='done',read_ids=$2 WHERE id=$1", [
+          batch.historyEpisode,
+          [expected],
+        ]);
+      }
+      assert.equal(await queue().next(), null);
+      assert.equal(
+        (await db.query("SELECT count(*)::int AS n FROM pilot_history_passes")).rows[0].n,
+        3,
+      );
+    } finally {
+      await db?.end();
+      await admin.query(`DROP DATABASE IF EXISTS ${name} WITH (FORCE)`);
+      await admin.end();
+      await rm(directory, { recursive: true, force: true });
     }
   },
 );
