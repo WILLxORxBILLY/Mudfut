@@ -2321,3 +2321,75 @@ test(
       assert.equal((await recover()).disposition, "idle");
     }),
 );
+
+databaseTest(
+  "edited correction requests remain excluded across repeated ingestion and restart",
+  async ({ db }) => {
+    const store = await pilotStore(db, { guildId, channelId });
+    const command = source(
+      commandId,
+      `!knowledge correct https://discord.com/channels/${guildId}/${channelId}/${sourceId} The interpretation needs review.`,
+    );
+    await store.ingest(command, false, true);
+    await store.excludeCorrectionRequestEvidence([command.id]);
+    const edited = source(commandId, "An ordinary edited message.");
+    await store.ingest(edited, false, true);
+    const before = (
+      await db.query("SELECT evidence_excluded,learnable,learned FROM pilot_sources WHERE id=$1", [
+        command.id,
+      ])
+    ).rows[0];
+    assert.equal(before.evidence_excluded, true);
+    assert.equal(before.learnable, false);
+    await store.ingest(edited, false, true);
+    assert.deepEqual(
+      (
+        await db.query(
+          "SELECT evidence_excluded,learnable,learned FROM pilot_sources WHERE id=$1",
+          [command.id],
+        )
+      ).rows[0],
+      before,
+    );
+    await store.ingest(edited, true, true);
+    assert.deepEqual(
+      (
+        await db.query(
+          "SELECT evidence_excluded,learnable,learned FROM pilot_sources WHERE id=$1",
+          [command.id],
+        )
+      ).rows[0],
+      before,
+    );
+    const credentials = JSON.parse(await readFile(join(state, "postgres.json"), "utf8"));
+    const database = (await db.query("SELECT current_database() AS database")).rows[0].database;
+    const replacement = new pg.Client({ ...credentials, database });
+    await db.query("SELECT pg_advisory_unlock(1560387,1127029)");
+    await replacement.connect();
+    try {
+      const restarted = await pilotStore(replacement, { guildId, channelId });
+      assert.equal(await restarted.next(), null);
+      assert.deepEqual(
+        (await restarted.findSources([command.id])).map((item) => item.content),
+        [edited.content],
+      );
+      // A row already made inconsistent by an earlier version remains excluded.
+      await replacement.query(
+        "UPDATE pilot_sources SET learnable=true,learned=false,addressed=false WHERE id=$1",
+        [command.id],
+      );
+      assert.equal(await restarted.next(), null);
+      await replacement.query("UPDATE pilot_sources SET addressed=true WHERE id=$1", [command.id]);
+      assert.equal(await restarted.next(), null);
+      const ordinary = source("555555555555555598", "An ordinary source.");
+      await restarted.ingest(ordinary, false, false);
+      await restarted.ingest(ordinary, false, true);
+      assert.deepEqual(
+        (await restarted.next()).rows.map((row) => row.id),
+        [ordinary.id],
+      );
+    } finally {
+      await replacement.end();
+    }
+  },
+);

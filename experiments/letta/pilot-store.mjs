@@ -246,9 +246,14 @@ export async function pilotStore(db, config) {
       const previous = (await db.query("SELECT * FROM pilot_sources WHERE id=$1", [source.id]))
         .rows[0];
       if (previous?.hash === hash && !previous.deleted) {
-        if ((addressed && !previous.addressed) || (learnable && !previous.learnable))
+        if (
+          (addressed && !previous.addressed) ||
+          (learnable && !previous.learnable && !previous.evidence_excluded)
+        )
           await db.query(
-            "UPDATE pilot_sources SET addressed=addressed OR $2,learnable=learnable OR $3,learned=false WHERE id=$1",
+            `UPDATE pilot_sources SET addressed=addressed OR $2,
+             learnable=CASE WHEN evidence_excluded THEN false ELSE learnable OR $3 END,
+             learned=CASE WHEN evidence_excluded THEN learned ELSE false END WHERE id=$1`,
             [source.id, addressed, learnable],
           );
         return;
@@ -304,7 +309,7 @@ export async function pilotStore(db, config) {
   async function next() {
     const direct = (
       await db.query(
-        `SELECT s.*, ${generationAttempts} FROM pilot_sources s WHERE NOT deleted AND addressed AND learnable
+        `SELECT s.*, ${generationAttempts} FROM pilot_sources s WHERE NOT deleted AND addressed AND learnable AND NOT evidence_excluded
         AND ${generationReady}
         AND source->>'guildId'=$1 AND (source->>'channelId'=ANY($2::text[])
           OR EXISTS(SELECT 1 FROM pilot_live_threads t WHERE t.channel_id=source->>'channelId'
@@ -318,7 +323,7 @@ export async function pilotStore(db, config) {
     if (direct) return { rows: [direct], replyTo: direct.id };
     const rows = (
       await db.query(
-        `SELECT s.*, ${generationAttempts} FROM pilot_sources s WHERE NOT deleted AND NOT learned AND learnable
+        `SELECT s.*, ${generationAttempts} FROM pilot_sources s WHERE NOT deleted AND NOT learned AND learnable AND NOT evidence_excluded
          AND ${generationReady}
          AND NOT EXISTS(SELECT 1 FROM pilot_source_holds h WHERE h.source_id=s.id)
          ORDER BY id::numeric LIMIT 12`,
