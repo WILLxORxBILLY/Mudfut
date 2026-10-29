@@ -3,6 +3,10 @@
 `pnpm start` runs the bounded supervisor in the foreground. SIGINT/SIGTERM request
 cleanup; do not clear worker locks or recovery state to force a second writer.
 A held failure needs inspection of its private receipts and a deliberate resume.
+The supervisor deliberately exits with status 0 on a held or blocked startup to
+prevent the optional LaunchAgent from restarting it indefinitely. A zero exit
+therefore does not establish readiness; inspect the error, private receipts and
+`pnpm bot:status` when its configuration and database are available.
 Preserve both the current database and any prepared work/unsent delivery before
 changing routes or restoring a backup. Do not restore an old database snapshot
 over newer memory without quantifying the data-loss interval.
