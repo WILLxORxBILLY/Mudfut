@@ -14,11 +14,13 @@ coverage questions. The sample schema does not grant any roles automatically.
 
 Keep the `messages_history_chronology` index from that schema: historical windows
 and their surrounding context order by creation time and the numeric message ID.
-Without a matching index, repeated archive scans can exceed the worker's bounded
-query timeout and eventually hold the shared reply worker. For an existing
-archive, have its owner inspect the indexes and add that index if absent; copy
-only its `CREATE INDEX` statement, not the schema's `CREATE TABLE`. The reader
-role should retain SELECT access only.
+Without a matching index, archive scans can exceed the bounded query timeout.
+A failed archive query pauses the separate reader for the rest of that worker
+process; historical work waits while live polling and replies using available
+evidence continue. For an existing archive, have its owner inspect the indexes
+and add that index if absent; copy only its `CREATE INDEX` statement, not the
+schema's `CREATE TABLE`. The reader role should retain SELECT access only. After
+repair, stop and start the worker to retry the archive connection.
 
 Give the dedicated reader SELECT access only, set its default transactions to
 read-only, and store its configuration in private `history-postgres.json` beside
