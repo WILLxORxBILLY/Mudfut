@@ -1,6 +1,9 @@
 import { memoryStore } from "./memory.mjs";
 import { digest, snowflake } from "./pilot-store.mjs";
 
+export const isCorrectionRequest = (source) =>
+  /^\s*(?:<@!?\d+>\s+)?!knowledge\s+correct\b/i.test(source?.content ?? "");
+
 export const memoryLimits = {
   readEntries: 24,
   evidencePerPatch: 12,
@@ -459,6 +462,8 @@ export function reviseUnderstanding(
         throw new Error(
           `Memory evidence for ${item.key} must quote a supplied current source exactly (message ${e?.messageId})`,
         );
+      if (isCorrectionRequest(source))
+        throw new Error("Correction request notes are review context, not memory evidence");
       if (e.quote.length > 512)
         throw new Error(
           `Evidence for ${item.key} is ${e.quote.length} characters; use an exact substring of at most 512 characters. Repair the quote without dropping the useful entry.`,
@@ -598,6 +603,8 @@ export function reviseUnderstanding(
       throw new Error(
         `Every observed message needs one explicit retention decision; invalid or duplicate target ${item?.messageId}`,
       );
+    if (item.decision === "retained" && isCorrectionRequest(sources.get(item.messageId)))
+      throw new Error("Correction request notes are review context, not memory evidence");
     if (
       item.decision === "retained" &&
       ![...current.values()].some((e) => evidenceIds([e]).includes(item.messageId))

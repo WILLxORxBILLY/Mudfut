@@ -1,5 +1,6 @@
 import { validateOperatorRequest } from "./pilot-requests.mjs";
-import { decodeUnderstanding } from "./pilot-memory.mjs";
+import { decodeUnderstanding, isCorrectionRequest } from "./pilot-memory.mjs";
+export { isCorrectionRequest } from "./pilot-memory.mjs";
 
 export const recallQuery = (input, batch) =>
   input.query ??
@@ -8,9 +9,6 @@ export const recallQuery = (input, batch) =>
     : (batch.operatorRequest?.prompt ?? batch.rows.map((row) => row.source.content).join(" ")));
 
 export const turnExpectsReply = (batch) => Boolean(batch.replyTo || batch.operatorRequest);
-
-export const isCorrectionRequest = (source) =>
-  /^\s*(?:<@!?\d+>\s+)?!knowledge\s+correct\b/i.test(source?.content ?? "");
 
 export const communityKnowledgeEvidence = (result) => ({
   target: result.target,
@@ -35,6 +33,7 @@ export const communityKnowledgeEvidence = (result) => ({
 export const correctionRequestSourceIds = (batch) =>
   new Set(
     [
+      ...batch.rows.map((row) => row.source),
       ...(batch.context?.priorMessages ?? []),
       ...(batch.context?.surroundingMessages ?? []),
       ...(batch.context?.correctionRequests ?? []).map((request) => request.reporterSource),
@@ -84,7 +83,7 @@ export function turnInput(batch, revision, botId) {
         "Only observationTargetIds need retained/irrelevant decisions. Context-only messages are surrounding evidence, not extra targets. Preserve valid proposals while repairing other errors. Read memory before changing it. Consolidate the same person/topic across episodes through explicit lineage; preserve changed views, dates, prior source lineage and contrary perspectives. Use provisional useful inferences naturally without turning them into facts. Notice recurring participation patterns, shared experiences and linked playful replies in surrounding or retrieved originals as well as targets. Retain useful social context and running jokes with exact source attribution; distinguish humorous self-description from a measured habit or promise. A tentative relationship inference needs direct linked exchanges and importance 1; warmth alone does not establish private friendship. Each substantive clause of a retained or consolidated statement needs its own supporting original in that entry's evidence, including inherited clauses. Add the actual source rather than borrowing support from a separate entry; split independent claims when needed. Do not auto-retain every archive hit. For lineage action extend, copy statement, kind and subjects exactly; changed wording needs revise with newer evidence. Do not merge unrelated topics that share a word." +
         (correctionSourceIds.length ||
         batch.context?.correctionRequests?.some((item) => item.reviewOrigin === "private-operator")
-          ? " correctionRequests identify a reported or private operator interpretation for review. A reporterSource or private operator review is review context, not community evidence: do not cite it in memory. Re-read the cited original targets and revise only when those originals support a qualified, changed or competing interpretation; otherwise preserve uncertainty."
+          ? " correctionRequests identify a reported or private operator interpretation for review. A reporterSource or private operator review is review context, not community evidence: do not cite it in memory. A correction request that is an observation target still needs an irrelevant decision. Re-read the cited original targets and revise only when those originals support a qualified, changed or competing interpretation; otherwise preserve uncertainty."
           : "") +
         (request
           ? " This is an actual operator request, not a community member utterance or an observation source. Its prompt supplies no evidence about members. Call update_memory with an empty observations array when there are no targets, including when upsert and remove are empty. Community understanding may use only sourced originals returned by the application tools."
