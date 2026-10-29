@@ -103,6 +103,17 @@ export async function reconcilePendingHistoryDerivations(
   if (!entries) return excluded("committed-memory-candidate-invalid");
   const projected = annotationsFromUnderstanding(entries, episode);
   if (!projected.length) return excluded("committed-memory-has-no-eligible-annotations");
+  const sourcesById = new Map(selectedSources.map((source) => [source.id, source]));
+  const invalidQuoteCount = projected.filter((annotation) =>
+    (annotation.sourceQuotes ?? []).some(
+      (quote) => !sourcesById.get(quote.sourceId)?.content.includes(quote.quote),
+    ),
+  ).length;
+  if (invalidQuoteCount)
+    return excluded("committed-memory-source-quote-invalid", {
+      projectedCount: projected.length,
+      invalidQuoteCount,
+    });
   const outcomes = [];
   for (const annotation of projected) {
     const work = await knowledge.prepareAnnotation({
