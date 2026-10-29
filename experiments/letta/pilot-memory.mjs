@@ -20,7 +20,11 @@ export function decodeUnderstanding(content) {
 }
 export const evidenceIds = (entries) => [
   ...new Set(
-    entries.flatMap((e) => [...e.evidence.map((s) => s.messageId), ...(e.sourceIds ?? [])]),
+    entries.flatMap((e) => [
+      ...e.evidence.map((s) => s.messageId),
+      ...(e.sourceIds ?? []),
+      ...(e.lineage?.sourceIds ?? []),
+    ]),
   ),
 ];
 
@@ -45,12 +49,23 @@ export function memoryEvidence(entries, sources) {
   return [...references.values()];
 }
 
+export function memoryHistorySourceIds(rows) {
+  return [
+    ...new Set(
+      rows
+        .filter((row) => row.entry && !row.tombstone)
+        .flatMap((row) => [...evidenceIds([row.entry]), ...(row.source_ids ?? [])]),
+    ),
+  ];
+}
+
 // Expose only this key's lineage, never a whole commit's unrelated or stale text.
 export function memoryHistoryEvidence(rows, sources, currentEntries) {
   return rows.map((row) => {
     const valid =
       row.entry &&
       !row.tombstone &&
+      memoryHistorySourceIds([row]).every((id) => sources.get(id)?.id === id) &&
       row.entry.evidence.every((e) => sources.get(e.messageId)?.content.includes(e.quote));
     const current = valid && row.is_current === true;
     const transition = (Array.isArray(row.audit) ? row.audit : [row.audit])
