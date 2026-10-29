@@ -22,9 +22,10 @@ The LaunchAgent reads the checkout's optional `.env` on each start, including
 state directory and renewable authentication mode take precedence over `.env`.
 Existing LaunchAgents need a deliberate stop and reinstall to adopt changed
 startup arguments; updating source alone does not rewrite an installed service.
-Model and persona settings are used when creating an agent. An existing
-installation retains its saved agent, model and memory; editing `.env` does not
-switch that agent to another model or replace its persona.
+The configured model is used when creating an agent; editing `.env` does not
+switch an existing agent to another model. On worker startup, a changed persona
+or style updates the existing agent's system prompt. The agent identity, saved
+model and memory are retained.
 
 `pnpm bot:status` prints a JSON report from a read-only transaction over the
 existing pilot tables; it does not initialize an installation, contact Discord,
@@ -43,6 +44,13 @@ are reported separately, including any that require inspection.
 The worker stores poll metadata in private `channel-polls.json` and archive
 availability in `archive-status.json`. Runtime progress, route access and delivery
 are separate observations. `pnpm knowledge report` reports bounded knowledge state.
+
+Correction cases are deduplicated by source ID and note digest. Repeating the same
+note for the same source does not reopen a closed case, even from a new reporter
+or after a source edit; an open case from a different reporter or review origin
+is reported as a conflict. Inspect the existing private correction receipt before
+assuming another review was queued. This release has no automatic reopening of
+those cases.
 
 An endpoint message read that reports Missing Access, Missing Permissions, or
 Unknown Channel leaves that channel's cursor unchanged while healthy channel
