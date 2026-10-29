@@ -2,6 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   correctionRequestSourceIds,
+  correctionReporterIds,
   durableCandidate,
   turnInput,
   turnExpectsReply,
@@ -259,4 +260,16 @@ test("discussion evidence preserves inspected bounds, gaps and post-stream avail
   assert.equal(result.archiveReads[1].sources[0].id, "automatic-original");
   assert.equal(result.archiveReads[2].completedAfterModelStream, true);
   assert.equal(result.archiveReads[2].coverage.completeDiscussion, false);
+});
+
+test("correction reporter lookup deduplicates messages without losing cases", () => {
+  assert.deepEqual(
+    correctionReporterIds([
+      { reporterSourceId: "one" },
+      { reporterSourceId: "one" },
+      { reporterSourceId: "two" },
+      { reviewOrigin: "private-operator" },
+    ]),
+    ["one", "two"],
+  );
 });

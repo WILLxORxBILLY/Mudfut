@@ -17,7 +17,7 @@ import { postgresUnderstanding } from "./pilot-memory-postgres.mjs";
 import { withLivePriority, livePriorityCheckpoint, progressPulse } from "./pilot-priority.mjs";
 import { retryableFailure, boundedCleanup } from "./pilot-supervisor.mjs";
 import { pilotModel, record } from "./pilot-model.mjs";
-import { durableCandidate, isCorrectionRequest } from "./pilot-reply.mjs";
+import { durableCandidate, isCorrectionRequest, correctionReporterIds } from "./pilot-reply.mjs";
 import { answerKnowledgeCommand } from "./pilot-knowledge-command.mjs";
 import { pollLiveChannels, liveSource, liveChannelPlan } from "./pilot-live-channels.mjs";
 import { timingTrace } from "./pilot-timing.mjs";
@@ -313,7 +313,7 @@ try {
       if (!batch?.historyEpisode) return batch;
       const requests = await knowledge.correctionReviewContexts(batch.historyEpisode);
       if (!requests.length) return batch;
-      const reporterSourceIds = requests.map((request) => request.reporterSourceId).filter(Boolean);
+      const reporterSourceIds = correctionReporterIds(requests);
       if (reporterSourceIds.length)
         await refreshSources(store, discord, record, reporterSourceIds, undefined, knowledge);
       const currentRequests = await knowledge.correctionReviewContexts(batch.historyEpisode);
@@ -327,9 +327,7 @@ try {
         error.code = "HISTORY_CORRECTION_CONTEXT_UNAVAILABLE";
         throw error;
       }
-      const currentReporterIds = currentRequests
-        .map((request) => request.reporterSourceId)
-        .filter(Boolean);
+      const currentReporterIds = correctionReporterIds(currentRequests);
       const sources = new Map(
         (await store.findSources(currentReporterIds)).map((source) => [source.id, source]),
       );

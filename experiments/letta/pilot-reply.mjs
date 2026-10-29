@@ -165,3 +165,7 @@ export function replyEvidence(initial, batch) {
     },
   };
 }
+
+export const correctionReporterIds = (requests) => [
+  ...new Set(requests.map((request) => request.reporterSourceId).filter(Boolean)),
+];

@@ -45,12 +45,22 @@ The worker stores poll metadata in private `channel-polls.json` and archive
 availability in `archive-status.json`. Runtime progress, route access and delivery
 are separate observations. `pnpm knowledge report` reports bounded knowledge state.
 
-Correction cases are deduplicated by source ID and note digest. Repeating the same
-note for the same source does not reopen a closed case, even from a new reporter
-or after a source edit; an open case from a different reporter or review origin
-is reported as a conflict. Inspect the existing private correction receipt before
-assuming another review was queued. This release has no automatic reopening of
-those cases.
+Correction cases retain their original records and receipts. A Discord correction
+is identified by target source, note, origin, reporter and reporter message; replaying
+that message remains idempotent even after the target is edited. A different message,
+reporter, note or origin creates a separate case. Requests without a reporter message,
+including private-operator requests, are also keyed by the target source revision,
+so the same request after an edit creates a fresh case. A closed case is not reopened
+by replaying the same identity. Reporter messages must still pass current-source
+validation before a retry is accepted. If a reporter message is removed or edited
+so it no longer matches its case, the case is retained as unavailable with an audit
+receipt; a matching new message or amended request can be reviewed independently.
+
+The database initialization migrates the former source-and-note uniqueness constraint
+atomically without changing correction rows or receipts. Once multiple cases share a
+source and note, older software that assumes the former constraint cannot safely be
+used for rollback; preserve the records and use compatible software or a separately
+reviewed migration. This code change alone does not deploy or migrate a live database.
 
 An endpoint message read that reports Missing Access, Missing Permissions, or
 Unknown Channel leaves that channel's cursor unchanged while healthy channel
