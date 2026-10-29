@@ -702,6 +702,50 @@ export async function communityKnowledge(db) {
   await db.query(
     "CREATE UNIQUE INDEX IF NOT EXISTS pilot_knowledge_jobs_prepared_logical_key ON pilot_knowledge_jobs(logical_key) WHERE status='prepared' AND logical_key IS NOT NULL",
   );
+  // The old constraint and its replacements change together, retaining every case.
+  await db.query("BEGIN");
+  try {
+    await db.query("SELECT pg_advisory_xact_lock(1560387,1127032)");
+    await db.query(`CREATE UNIQUE INDEX IF NOT EXISTS pilot_correction_discord_identity
+      ON pilot_knowledge_corrections(source_id,note_digest,review_origin,reporter_id,reporter_source_id)
+      NULLS NOT DISTINCT WHERE reporter_source_id IS NOT NULL`);
+    await db.query(`CREATE UNIQUE INDEX IF NOT EXISTS pilot_correction_revision_identity
+      ON pilot_knowledge_corrections(source_id,source_revision,note_digest,review_origin,reporter_id)
+      NULLS NOT DISTINCT WHERE reporter_source_id IS NULL`);
+    await db.query(`DO $$ BEGIN
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_index i WHERE i.indexrelid='pilot_correction_discord_identity'::regclass
+          AND i.indrelid='pilot_knowledge_corrections'::regclass AND i.indisunique
+          AND i.indisvalid AND i.indnullsnotdistinct
+          AND pg_get_expr(i.indpred,i.indrelid)='(reporter_source_id IS NOT NULL)'
+          AND (SELECT array_agg(a.attname::text ORDER BY k.ord)
+            FROM unnest(i.indkey) WITH ORDINALITY k(attnum,ord) JOIN pg_attribute a
+              ON a.attrelid=i.indrelid AND a.attnum=k.attnum) =
+            ARRAY['source_id','note_digest','review_origin','reporter_id','reporter_source_id']::text[]
+      ) OR NOT EXISTS (
+        SELECT 1 FROM pg_index i WHERE i.indexrelid='pilot_correction_revision_identity'::regclass
+          AND i.indrelid='pilot_knowledge_corrections'::regclass AND i.indisunique
+          AND i.indisvalid AND i.indnullsnotdistinct
+          AND pg_get_expr(i.indpred,i.indrelid)='(reporter_source_id IS NULL)'
+          AND (SELECT array_agg(a.attname::text ORDER BY k.ord)
+            FROM unnest(i.indkey) WITH ORDINALITY k(attnum,ord) JOIN pg_attribute a
+              ON a.attrelid=i.indrelid AND a.attnum=k.attnum) =
+            ARRAY['source_id','source_revision','note_digest','review_origin','reporter_id']::text[]
+      ) THEN RAISE EXCEPTION 'Correction identity index has an unexpected definition'; END IF;
+    END $$`);
+    await db.query(`DO $$ DECLARE item record; BEGIN
+      FOR item IN SELECT c.conname FROM pg_constraint c
+      WHERE c.conrelid='pilot_knowledge_corrections'::regclass AND c.contype='u'
+        AND (SELECT array_agg(a.attname::text ORDER BY a.attname)
+             FROM unnest(c.conkey) k JOIN pg_attribute a
+               ON a.attrelid=c.conrelid AND a.attnum=k) = ARRAY['note_digest','source_id']::text[]
+      LOOP EXECUTE format('ALTER TABLE pilot_knowledge_corrections DROP CONSTRAINT %I',item.conname); END LOOP;
+    END $$`);
+    await db.query("COMMIT");
+  } catch (error) {
+    await db.query("ROLLBACK").catch(() => {});
+    throw error;
+  }
   async function transaction(operation) {
     await db.query("BEGIN");
     try {
@@ -726,7 +770,7 @@ export async function communityKnowledge(db) {
   async function sourceRows(ids, lock = false) {
     const rows = (
       await db.query(
-        `SELECT * FROM pilot_knowledge_sources WHERE id=ANY($1::text[])${lock ? " FOR UPDATE" : ""}`,
+        `SELECT * FROM pilot_knowledge_sources WHERE id=ANY($1::text[]) ORDER BY id${lock ? " FOR UPDATE" : ""}`,
         [ids],
       )
     ).rows;
@@ -1464,17 +1508,30 @@ export async function communityKnowledge(db) {
         !annotation.sourceIds.some((id) => episode.sourceIds.includes(id))
       )
         throw new Error("Community annotation must cite the manifest episode targets");
-      const directSources = await sourceRows(annotation.sourceIds, true);
       const directIds = new Set(annotation.sourceIds);
-      const contextIds = new Set(annotation.contextSourceIds ?? []);
-      for (const row of directSources.values()) {
-        const parentId = row.source.replyTo;
-        if (parentId && allowed.has(parentId) && !directIds.has(parentId)) contextIds.add(parentId);
-      }
-      if (contextIds.size !== (annotation.contextSourceIds ?? []).length)
+      const explicitContextIds = new Set(annotation.contextSourceIds ?? []);
+      const addParents = (rows, contextIds) => {
+        for (const row of rows.values()) {
+          const parentId = row.source.replyTo;
+          if (parentId && allowed.has(parentId) && !directIds.has(parentId))
+            contextIds.add(parentId);
+        }
+      };
+      // Discover potential parents without locks, then lock the whole set in source ID order.
+      const possibleContextIds = new Set(explicitContextIds);
+      addParents(await sourceRows(annotation.sourceIds), possibleContextIds);
+      const lockedSources = await sourceRows([...directIds, ...possibleContextIds], true);
+      const contextIds = new Set(explicitContextIds);
+      addParents(new Map([...directIds].map((id) => [id, lockedSources.get(id)])), contextIds);
+      if ([...contextIds].some((id) => !lockedSources.has(id)))
+        throw new Error("Community annotation source changed during preparation; retry");
+      if (
+        contextIds.size !== (annotation.contextSourceIds ?? []).length ||
+        [...contextIds].some((id) => !explicitContextIds.has(id))
+      )
         annotation = validateAnnotation({ ...annotation, contextSourceIds: [...contextIds] });
       const dependencySourceIds = [...annotation.sourceIds, ...(annotation.contextSourceIds ?? [])];
-      const sources = await sourceRows(dependencySourceIds, true);
+      const sources = new Map(dependencySourceIds.map((id) => [id, lockedSources.get(id)]));
       if (
         [...sources.values()].some(
           (row) =>
@@ -1819,50 +1876,55 @@ export async function communityKnowledge(db) {
           throw new Error("Correction reporter source does not match the requested review");
       }
       const noteDigest = sha256(command.note);
-      let correction = (
+      const requestedOrigin = command.reviewOrigin ?? "discord";
+      const correction = (
         await db.query(
-          "SELECT id,status,review_origin,reporter_source_id FROM pilot_knowledge_corrections WHERE source_id=$1 AND note_digest=$2 FOR UPDATE",
-          [command.sourceId, noteDigest],
+          `SELECT id,status FROM pilot_knowledge_corrections
+           WHERE source_id=$1 AND note_digest=$2 AND review_origin=$3
+             AND reporter_id IS NOT DISTINCT FROM $4 AND reporter_source_id IS NOT DISTINCT FROM $5
+             AND ($5::text IS NOT NULL OR source_revision=$6) FOR UPDATE`,
+          [
+            command.sourceId,
+            noteDigest,
+            requestedOrigin,
+            command.reporterId ?? null,
+            command.reporterSourceId ?? null,
+            source.revision,
+          ],
         )
       ).rows[0];
-      const requestedOrigin = command.reviewOrigin ?? "discord";
       if (correction) {
-        if (correction.status !== "open") {
-          result = {
-            disposition: "already-resolved",
-            status: correction.status,
-            sourceId: command.sourceId,
-          };
-          return;
-        }
-        if (
-          correction.review_origin !== requestedOrigin ||
-          (correction.reporter_source_id ?? null) !== (command.reporterSourceId ?? null)
-        ) {
-          result = { disposition: "origin-conflict", sourceId: command.sourceId };
-          return;
-        }
-        result = {
-          disposition: "already-open",
-          correctionId: correction.id,
-          sourceId: command.sourceId,
-        };
+        result =
+          correction.status === "open"
+            ? {
+                disposition: "already-open",
+                correctionId: correction.id,
+                sourceId: command.sourceId,
+              }
+            : {
+                disposition: "already-resolved",
+                status: correction.status,
+                sourceId: command.sourceId,
+              };
         return;
       }
-      if (!correction)
-        correction = (
-          await db.query(
-            "INSERT INTO pilot_knowledge_corrections(id,source_id,source_revision,note_digest,status,review_origin,review_note) VALUES($1,$2,$3,$4,'open',$5,$6) RETURNING id",
-            [
-              randomUUID(),
-              command.sourceId,
-              source.revision,
-              noteDigest,
-              requestedOrigin,
-              command.reviewOrigin === "private-operator" ? command.note.trim() : null,
-            ],
-          )
-        ).rows[0];
+      const opened = (
+        await db.query(
+          `INSERT INTO pilot_knowledge_corrections
+         (id,source_id,source_revision,note_digest,status,review_origin,review_note,reporter_id,reporter_source_id)
+         VALUES($1,$2,$3,$4,'open',$5,$6,$7,$8) RETURNING id`,
+          [
+            randomUUID(),
+            command.sourceId,
+            source.revision,
+            noteDigest,
+            requestedOrigin,
+            command.reviewOrigin === "private-operator" ? command.note : null,
+            command.reporterId ?? null,
+            command.reporterSourceId ?? null,
+          ],
+        )
+      ).rows[0];
       await db.query(
         "UPDATE pilot_knowledge_sources SET correction_generation=correction_generation+1,updated_at=clock_timestamp() WHERE id=$1",
         [command.sourceId],
@@ -1877,14 +1939,17 @@ export async function communityKnowledge(db) {
         [command.sourceId],
       );
       await invalidateAffectedViews([command.sourceId]);
+      const priorAffected = (
+        await db.query(
+          `SELECT affected_annotation_ids FROM pilot_knowledge_corrections
+         WHERE source_id=$1 AND source_revision=$2 AND status='open' AND id<>$3`,
+          [command.sourceId, source.revision, opened.id],
+        )
+      ).rows.flatMap((row) => parsed(row.affected_annotation_ids));
+      const affected = [...new Set([...invalidated.rows.map((row) => row.id), ...priorAffected])];
       await db.query(
-        "UPDATE pilot_knowledge_corrections SET reporter_id=COALESCE(reporter_id,$2),reporter_source_id=COALESCE(reporter_source_id,$3),affected_annotation_ids=CASE WHEN jsonb_array_length(affected_annotation_ids)=0 THEN $4::jsonb ELSE affected_annotation_ids END WHERE id=$1",
-        [
-          correction.id,
-          command.reporterId ?? null,
-          command.reporterSourceId ?? null,
-          jsonb(invalidated.rows.map((row) => row.id)),
-        ],
+        "UPDATE pilot_knowledge_corrections SET affected_annotation_ids=$2::jsonb WHERE id=$1",
+        [opened.id, jsonb(affected)],
       );
       const requeued = await db.query(
         "UPDATE pilot_knowledge_jobs SET status='requeued' WHERE status='committed' AND effective AND source_ids && ARRAY[$1] RETURNING id",
@@ -1893,7 +1958,7 @@ export async function communityKnowledge(db) {
       await invalidateQueuedPilotDelivery(command.sourceId);
       const queuedEpisodes = await scheduleCorrectionEpisodes(command.sourceId);
       await receipt(db, "correction-opened", {
-        correctionId: correction.id,
+        correctionId: opened.id,
         sourceId: command.sourceId,
         sourceRevision: source.revision,
         correctionGeneration: source.correction_generation + 1,
@@ -1901,14 +1966,14 @@ export async function communityKnowledge(db) {
         reporterId: command.reporterId ?? null,
         reporterSourceId: command.reporterSourceId ?? null,
         reviewOrigin: requestedOrigin,
-        affectedAnnotationIds: invalidated.rows.map((row) => row.id),
+        affectedAnnotationIds: affected,
         invalidatedAnnotationCount: invalidated.rowCount,
         requeuedJobCount: requeued.rowCount,
         queuedEpisodeIds: queuedEpisodes,
       });
       result = {
         disposition: "correction-opened",
-        correctionId: correction.id,
+        correctionId: opened.id,
         sourceId: command.sourceId,
         invalidatedAnnotationCount: invalidated.rowCount,
         queuedEpisodeIds: queuedEpisodes,
@@ -1929,6 +1994,28 @@ export async function communityKnowledge(db) {
       throw new Error("Invalid community correction resolution");
     let result;
     await transaction(async () => {
+      const initial = (
+        await db.query("SELECT source_id FROM pilot_knowledge_corrections WHERE id=$1", [
+          input.correctionId,
+        ])
+      ).rows[0];
+      if (!initial) throw new Error("Unknown community correction");
+      const initialAnnotation =
+        input.annotationId &&
+        (
+          await db.query(
+            "SELECT source_ids FROM pilot_knowledge_annotations WHERE id=$1 ORDER BY revision DESC LIMIT 1",
+            [input.annotationId],
+          )
+        ).rows[0];
+      const lockedIds = [
+        ...new Set([initial.source_id, ...(initialAnnotation?.source_ids ?? [])]),
+      ].sort();
+      // Match source-first correction and annotation writers before taking case/annotation locks.
+      await db.query(
+        "SELECT id FROM pilot_knowledge_sources WHERE id=ANY($1::text[]) ORDER BY id FOR UPDATE",
+        [lockedIds],
+      );
       const correction = (
         await db.query("SELECT * FROM pilot_knowledge_corrections WHERE id=$1 FOR UPDATE", [
           input.correctionId,
@@ -1942,16 +2029,41 @@ export async function communityKnowledge(db) {
       if (input.annotationId) {
         const annotation = (
           await db.query(
-            "SELECT source_ids,status FROM pilot_knowledge_annotations WHERE id=$1 ORDER BY revision DESC LIMIT 1 FOR UPDATE",
+            "SELECT source_ids,status,revision,candidate FROM pilot_knowledge_annotations WHERE id=$1 ORDER BY revision DESC LIMIT 1 FOR UPDATE",
             [input.annotationId],
           )
         ).rows[0];
         if (
           !annotation ||
           annotation.status !== "candidate" ||
-          !annotation.source_ids.includes(correction.source_id)
+          !annotation.source_ids.includes(correction.source_id) ||
+          annotation.source_ids.some((id) => !lockedIds.includes(id))
         )
           throw new Error("Correction resolution requires a current dependent interpretation");
+        if (input.expectedRevision !== undefined) {
+          const job = (
+            await db.query(
+              `SELECT source_generations,source_revisions,correction_generations FROM pilot_knowledge_jobs
+             WHERE annotation_id=$1 AND candidate=$2::jsonb AND status='committed'
+             ORDER BY completed_at DESC LIMIT 1`,
+              [input.annotationId, jsonb(parsed(annotation.candidate))],
+            )
+          ).rows[0];
+          const sources = await sourceRows(annotation.source_ids, true);
+          if (
+            annotation.revision !== input.expectedRevision ||
+            !job ||
+            [...sources].some(
+              ([id, row]) =>
+                parsed(job.source_generations)[id] !== row.generation ||
+                parsed(job.source_revisions)?.[id] !== row.revision ||
+                parsed(job.correction_generations)[id] !== row.correction_generation,
+            )
+          ) {
+            result = { disposition: "stale-review" };
+            return;
+          }
+        }
       }
       await db.query(
         "UPDATE pilot_knowledge_corrections SET status=$2,resolution_annotation_id=$3,resolved_at=clock_timestamp() WHERE id=$1",
@@ -1992,35 +2104,52 @@ export async function communityKnowledge(db) {
       const outcome = outcomes[index];
       if (!["applied", "already-applied"].includes(outcome?.disposition) || !outcome.annotationId)
         continue;
+      const committed = (
+        await db.query(
+          `SELECT source_ids,candidate FROM pilot_knowledge_annotations
+         WHERE id=$1 AND revision=$2 AND manifest_id=$3 AND episode_id=$4 AND status='candidate'`,
+          [outcome.annotationId, outcome.revision, manifestId, `${manifestId}:${episodeKey}`],
+        )
+      ).rows[0];
+      if (!committed) continue;
+      const reviewed = validateAnnotation(parsed(committed.candidate));
       const corrections = (
         await db.query(
-          `SELECT id,affected_annotation_ids FROM pilot_knowledge_corrections
+          `SELECT id,source_id,source_revision,affected_annotation_ids FROM pilot_knowledge_corrections
            WHERE status='open' AND id=ANY($1::uuid[])
              AND source_id=ANY($2::text[])`,
-          [correctionIds, candidate.sourceIds],
+          [correctionIds, committed.source_ids],
         )
       ).rows;
       for (const correction of corrections) {
         if (completedIds.has(correction.id)) continue;
         const previous = (
           await db.query(
-            `SELECT candidate FROM pilot_knowledge_annotations
-             WHERE id=ANY($1::text[]) AND status='invalidated'
-             ORDER BY revision DESC LIMIT 1`,
-            [parsed(correction.affected_annotation_ids)],
+            `SELECT a.candidate FROM pilot_knowledge_annotations a
+             WHERE a.id=ANY($1::text[]) AND a.status='invalidated' AND EXISTS (
+               SELECT 1 FROM pilot_knowledge_jobs j WHERE j.annotation_id=a.id
+                 AND j.candidate=a.candidate AND j.source_revisions->>$2=$3::text)
+             ORDER BY a.revision DESC LIMIT 1`,
+            [
+              parsed(correction.affected_annotation_ids),
+              correction.source_id,
+              correction.source_revision,
+            ],
           )
         ).rows[0];
         const prior = previous && validateAnnotation(parsed(previous.candidate));
         const reaffirmed =
           prior &&
-          prior.interpretation === candidate.interpretation &&
-          JSON.stringify(prior.qualifications) === JSON.stringify(candidate.qualifications) &&
-          JSON.stringify(prior.sourceIds) === JSON.stringify(candidate.sourceIds);
+          prior.interpretation === reviewed.interpretation &&
+          JSON.stringify(prior.qualifications) === JSON.stringify(reviewed.qualifications) &&
+          JSON.stringify(prior.sourceIds) === JSON.stringify(reviewed.sourceIds);
         const resolution = await resolveCorrection({
           correctionId: correction.id,
           disposition: reaffirmed ? "reaffirmed" : "accepted",
           annotationId: outcome.annotationId,
+          expectedRevision: outcome.revision,
         });
+        if (resolution.disposition !== "resolved") continue;
         completed.push({ correctionId: correction.id, status: resolution.status });
         completedIds.add(correction.id);
       }
@@ -2030,7 +2159,21 @@ export async function communityKnowledge(db) {
   async function completePrivateOperatorReviews({ manifestId, episodeKey, candidates, outcomes }) {
     if (!Array.isArray(candidates)) throw new Error("Invalid private operator review completion");
     const sourceIds = [
-      ...new Set(candidates.flatMap((candidate) => validateAnnotation(candidate).sourceIds)),
+      ...new Set(
+        (
+          await db.query(
+            `SELECT source_ids FROM pilot_knowledge_annotations
+       WHERE id=ANY($1::text[]) AND manifest_id=$2 AND episode_id=$3 AND status='candidate'`,
+            [
+              outcomes
+                .filter((outcome) => ["applied", "already-applied"].includes(outcome?.disposition))
+                .map((outcome) => outcome.annotationId),
+              manifestId,
+              `${manifestId}:${episodeKey}`,
+            ],
+          )
+        ).rows.flatMap((row) => row.source_ids),
+      ),
     ];
     const correctionIds = (
       await db.query(
@@ -2069,25 +2212,49 @@ export async function communityKnowledge(db) {
   }
   async function retireUnavailableCorrectionReporters(episodeId) {
     return transaction(async () => {
-      const retired = (
+      const cases = (
         await db.query(
-          `UPDATE pilot_knowledge_corrections c SET status='unavailable',resolved_at=clock_timestamp()
-           WHERE c.status='open' AND c.review_origin='discord' AND c.reporter_source_id IS NOT NULL
-             AND EXISTS(SELECT 1 FROM pilot_knowledge_jobs j
-               WHERE j.status='requeued' AND j.episode_id=$1 AND j.source_ids && ARRAY[c.source_id])
-             AND NOT EXISTS(SELECT 1 FROM pilot_knowledge_sources reporter
-               WHERE reporter.id=c.reporter_source_id AND NOT reporter.deleted)
-           RETURNING c.id,c.source_id,c.reporter_source_id`,
+          `SELECT c.id,c.source_id,c.reporter_source_id,c.reporter_id,c.note_digest,
+          reporter.source AS reporter_source
+         FROM pilot_knowledge_corrections c
+         LEFT JOIN pilot_knowledge_sources reporter ON reporter.id=c.reporter_source_id AND NOT reporter.deleted
+         WHERE c.status='open' AND c.review_origin='discord' AND c.reporter_source_id IS NOT NULL
+           AND EXISTS(SELECT 1 FROM pilot_knowledge_jobs j WHERE j.status='requeued'
+             AND j.episode_id=$1 AND j.source_ids && ARRAY[c.source_id]) FOR UPDATE OF c`,
           [episodeId],
         )
       ).rows;
-      for (const correction of retired)
+      const retired = [];
+      for (const correction of cases) {
+        let reporter, command;
+        try {
+          reporter = sourceShape(parsed(correction.reporter_source));
+          command = parseKnowledgeCommand(reporter.content);
+        } catch {
+          /* Missing or malformed reporter evidence cannot support a review. */
+        }
+        if (
+          reporter &&
+          reporter.authorId === correction.reporter_id &&
+          command?.route === "correct" &&
+          command.sourceId === correction.source_id &&
+          sha256(command.note) === correction.note_digest
+        )
+          continue;
+        await db.query(
+          "UPDATE pilot_knowledge_corrections SET status='unavailable',resolved_at=clock_timestamp() WHERE id=$1",
+          [correction.id],
+        );
         await receipt(db, "correction-unavailable", {
           correctionId: correction.id,
           sourceId: correction.source_id,
           reporterSourceId: correction.reporter_source_id,
-          reason: "reporter-source-unavailable",
+          reason: correction.reporter_source
+            ? "reporter-source-changed"
+            : "reporter-source-unavailable",
         });
+        retired.push(correction);
+      }
       return retired;
     });
   }
@@ -2158,7 +2325,10 @@ export async function communityKnowledge(db) {
     return transaction(async () => {
       const retired = await db.query(
         `UPDATE pilot_knowledge_jobs SET status='stale',effective=false,completed_at=clock_timestamp()
-         WHERE status='requeued' AND manifest_id=$1 AND episode_id=$2 RETURNING id`,
+         WHERE status='requeued' AND manifest_id=$1 AND episode_id=$2
+           AND NOT EXISTS (SELECT 1 FROM pilot_knowledge_corrections c
+             WHERE c.status='open' AND c.source_id=ANY(pilot_knowledge_jobs.source_ids))
+         RETURNING id`,
         [manifestId, episodeId],
       );
       if (!retired.rowCount) return { disposition: "none", episodeId };

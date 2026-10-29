@@ -1374,10 +1374,18 @@ databaseTest(
         `!knowledge correct https://discord.com/channels/${guildId}/${channelId}/${sourceId} A changed reporter note.`,
       ),
     );
-    await assert.rejects(
-      () => knowledge.correctionReviewContexts(`${manifest.id}:trip`),
-      (error) => error.code === "HISTORY_CORRECTION_CONTEXT_UNAVAILABLE",
+    assert.deepEqual(
+      await knowledge.correctionReviewContexts(`${manifest.id}:trip`),
+      [],
       "an edited reporter message cannot become stale model review context",
+    );
+    assert.equal(
+      (
+        await db.query("SELECT status FROM pilot_knowledge_corrections WHERE id=$1", [
+          opened.correctionId,
+        ])
+      ).rows[0].status,
+      "unavailable",
     );
   },
 );
@@ -1499,12 +1507,12 @@ databaseTest(
     const store = await pilotStore(db, { guildId, channelId });
     const oldReporter = source(
       commandId,
-      `!knowledge correct https://discord.com/channels/${guildId}/${channelId}/${sourceId} An older correction request.`,
+      `!knowledge correct https://discord.com/channels/${guildId}/${channelId}/${sourceId} The same correction request.`,
     );
     const currentReporterId = "555555555555555598";
     const currentReporter = source(
       currentReporterId,
-      `!knowledge correct https://discord.com/channels/${guildId}/${channelId}/${sourceId} A current narrower correction request.`,
+      `!knowledge correct https://discord.com/channels/${guildId}/${channelId}/${sourceId} The same correction request.`,
     );
     await knowledge.commitAnnotation(await prepare());
     await db.query(
@@ -1528,7 +1536,7 @@ databaseTest(
     const old = await knowledge.correct({
       ...correction,
       reporterSourceId: oldReporter.id,
-      note: "An older correction request.",
+      note: "The same correction request.",
     });
     await knowledge.removeSource(oldReporter.id);
     assert.deepEqual(await knowledge.correctionReviewContexts(`${manifest.id}:trip`), []);
@@ -1554,7 +1562,7 @@ databaseTest(
     const current = await knowledge.correct({
       ...correction,
       reporterSourceId: currentReporter.id,
-      note: "A current narrower correction request.",
+      note: "The same correction request.",
     });
     const contexts = await knowledge.correctionReviewContexts(`${manifest.id}:trip`);
     assert.deepEqual(contexts, [
@@ -1572,5 +1580,491 @@ databaseTest(
       }),
       [{ correctionId: current.correctionId, status: "accepted" }],
     );
+  },
+);
+
+databaseTest(
+  "correction identity migration preserves cases and receipts",
+  async ({ db, knowledge }) => {
+    const old = await knowledge.correct(correction);
+    await knowledge.resolveCorrection({ correctionId: old.correctionId, disposition: "rejected" });
+    await knowledge.correct({
+      ...correction,
+      note: "Another open legacy case.",
+      reporterId: undefined,
+    });
+    await knowledge.correct({
+      ...correction,
+      note: "A private legacy case.",
+      reporterId: undefined,
+      reviewOrigin: "private-operator",
+    });
+    const before = (await db.query("SELECT * FROM pilot_knowledge_corrections ORDER BY id")).rows;
+    const receipts = (await db.query("SELECT * FROM pilot_knowledge_receipts ORDER BY id")).rows;
+    await db.query("DROP INDEX pilot_correction_discord_identity");
+    await db.query("DROP INDEX pilot_correction_revision_identity");
+    await db.query(
+      "ALTER TABLE pilot_knowledge_corrections ADD CONSTRAINT legacy_custom_identity UNIQUE(source_id,note_digest)",
+    );
+    const restarted = await communityKnowledge(db);
+    assert.deepEqual(
+      (await db.query("SELECT * FROM pilot_knowledge_corrections ORDER BY id")).rows,
+      before,
+    );
+    assert.deepEqual(
+      (await db.query("SELECT * FROM pilot_knowledge_receipts ORDER BY id")).rows,
+      receipts,
+    );
+    assert.equal((await restarted.correct(correction)).disposition, "already-resolved");
+    assert.equal(
+      (
+        await db.query(
+          "SELECT count(*)::int AS n FROM pg_constraint WHERE conname='legacy_custom_identity'",
+        )
+      ).rows[0].n,
+      0,
+    );
+  },
+);
+
+databaseTest(
+  "separate correction cases retain prior interpretation and complete together",
+  async ({ db, knowledge, prepare }) => {
+    const reporter1 = source(
+      commandId,
+      `!knowledge correct https://discord.com/channels/${guildId}/${channelId}/${sourceId} ${correction.note}`,
+    );
+    const otherAuthor = "333333333333333334";
+    const reporter2 = { ...source("555555555555555598", reporter1.content), authorId: otherAuthor };
+    const reporter3 = source("555555555555555597", reporter1.content);
+    await knowledge.registerSource(reporter1);
+    await knowledge.registerSource(reporter2);
+    await knowledge.registerSource(reporter3);
+    await knowledge.commitAnnotation(await prepare());
+    const first = await knowledge.correct({ ...correction, reporterSourceId: reporter1.id });
+    const second = await knowledge.correct({
+      ...correction,
+      reporterId: otherAuthor,
+      reporterSourceId: reporter2.id,
+    });
+    const third = await knowledge.correct({ ...correction, reporterSourceId: reporter3.id });
+    assert.equal(new Set([first.correctionId, second.correctionId, third.correctionId]).size, 3);
+    const restarted = await communityKnowledge(db);
+    const beforeRetry = (
+      await db.query("SELECT correction_generation FROM pilot_knowledge_sources WHERE id=$1", [
+        sourceId,
+      ])
+    ).rows[0];
+    const beforeReceipts = (
+      await db.query(
+        "SELECT count(*)::int AS n FROM pilot_knowledge_receipts WHERE kind='correction-opened'",
+      )
+    ).rows[0];
+    assert.equal(
+      (await restarted.correct({ ...correction, reporterSourceId: reporter1.id })).disposition,
+      "already-open",
+    );
+    assert.deepEqual(
+      (
+        await db.query("SELECT correction_generation FROM pilot_knowledge_sources WHERE id=$1", [
+          sourceId,
+        ])
+      ).rows[0],
+      beforeRetry,
+    );
+    assert.deepEqual(
+      (
+        await db.query(
+          "SELECT count(*)::int AS n FROM pilot_knowledge_receipts WHERE kind='correction-opened'",
+        )
+      ).rows[0],
+      beforeReceipts,
+    );
+    assert.deepEqual(
+      (
+        await db.query(
+          "SELECT affected_annotation_ids FROM pilot_knowledge_corrections WHERE id=$1",
+          [second.correctionId],
+        )
+      ).rows[0].affected_annotation_ids,
+      ["trip-preference"],
+    );
+    const reviewed = candidate();
+    const outcome = await knowledge.commitAnnotation(await prepare(reviewed));
+    const completed = await knowledge.completeCorrectionReviews({
+      manifestId: manifest.id,
+      episodeKey: "trip",
+      candidates: [reviewed],
+      outcomes: [outcome],
+      correctionIds: [first.correctionId, second.correctionId, third.correctionId],
+    });
+    assert.deepEqual(
+      completed.map((item) => item.status),
+      ["reaffirmed", "reaffirmed", "reaffirmed"],
+    );
+    assert.equal(
+      (await knowledge.correct({ ...correction, reporterSourceId: reporter1.id })).disposition,
+      "already-resolved",
+    );
+    assert.deepEqual(
+      (
+        await db.query("SELECT correction_generation FROM pilot_knowledge_sources WHERE id=$1", [
+          sourceId,
+        ])
+      ).rows[0],
+      beforeRetry,
+    );
+    assert.deepEqual(
+      (
+        await db.query(
+          "SELECT count(*)::int AS n FROM pilot_knowledge_receipts WHERE kind='correction-opened'",
+        )
+      ).rows[0],
+      beforeReceipts,
+    );
+    await knowledge.registerSource(source(sourceId, "The target message was edited."));
+    assert.equal(
+      (await knowledge.correct({ ...correction, reporterSourceId: reporter1.id })).disposition,
+      "already-resolved",
+    );
+    const reporter4 = source("555555555555555596", reporter1.content);
+    await knowledge.registerSource(reporter4);
+    assert.equal(
+      (await knowledge.correct({ ...correction, reporterSourceId: reporter4.id })).disposition,
+      "correction-opened",
+    );
+    const privateRequest = {
+      ...correction,
+      reporterId: undefined,
+      reviewOrigin: "private-operator",
+    };
+    assert.equal((await knowledge.correct(privateRequest)).disposition, "correction-opened");
+    assert.equal((await knowledge.correct(privateRequest)).disposition, "already-open");
+    await knowledge.registerSource(source(sourceId, "The target message was edited again."));
+    assert.equal((await knowledge.correct(privateRequest)).disposition, "correction-opened");
+  },
+);
+
+databaseTest(
+  "review completion uses the committed reply-parent dependency",
+  async ({ db, knowledge, prepare }) => {
+    await knowledge.registerSource(source(contextId, "The parent context."));
+    await knowledge.registerSource(
+      source(sourceId, "I prefer the train for this trip.", contextId),
+    );
+    await knowledge.commitAnnotation(await prepare());
+    const request = {
+      ...correction,
+      sourceId: contextId,
+      reporterId: undefined,
+      reviewOrigin: "private-operator",
+    };
+    const opened = await knowledge.correct(request);
+    const reviewed = candidate();
+    const outcome = await knowledge.commitAnnotation(await prepare(reviewed));
+    assert.deepEqual(
+      await knowledge.completePrivateOperatorReviews({
+        manifestId: manifest.id,
+        episodeKey: "trip",
+        candidates: [reviewed],
+        outcomes: [outcome],
+      }),
+      [{ correctionId: opened.correctionId, status: "reaffirmed" }],
+    );
+  },
+);
+
+databaseTest(
+  "concurrent retries open one case and a later generation fences completion",
+  async ({ db, knowledge, prepare }) => {
+    const credentials = JSON.parse(await readFile(join(state, "postgres.json"), "utf8"));
+    const database = (await db.query("SELECT current_database() AS database")).rows[0].database;
+    const other = new pg.Client({ ...credentials, database });
+    await other.connect();
+    try {
+      const restarted = await communityKnowledge(other);
+      await knowledge.commitAnnotation(await prepare());
+      const [a, b] = await Promise.all([
+        knowledge.correct(correction),
+        restarted.correct(correction),
+      ]);
+      assert.deepEqual([a.disposition, b.disposition].sort(), [
+        "already-open",
+        "correction-opened",
+      ]);
+      assert.equal(a.correctionId, b.correctionId);
+      assert.equal(
+        (
+          await db.query(
+            "SELECT count(*)::int AS n FROM pilot_knowledge_receipts WHERE kind='correction-opened'",
+          )
+        ).rows[0].n,
+        1,
+      );
+      const reviewed = candidate();
+      const outcome = await knowledge.commitAnnotation(await prepare(reviewed));
+      await knowledge.correct({ ...correction, note: "A different correction." });
+      assert.deepEqual(
+        await knowledge.completeCorrectionReviews({
+          manifestId: manifest.id,
+          episodeKey: "trip",
+          candidates: [reviewed],
+          outcomes: [outcome],
+          correctionIds: [a.correctionId],
+        }),
+        [],
+      );
+      assert.equal(
+        (await knowledge.completeRequeuedEpisode({ manifestId: manifest.id, episodeKey: "trip" }))
+          .disposition,
+        "none",
+      );
+      assert.equal(
+        (
+          await db.query("SELECT status FROM pilot_knowledge_corrections WHERE id=$1", [
+            a.correctionId,
+          ])
+        ).rows[0].status,
+        "open",
+      );
+    } finally {
+      await other.end();
+    }
+  },
+);
+
+databaseTest(
+  "edited reporter text retires its old case and permits a new case",
+  async ({ db, knowledge, prepare }) => {
+    const firstText = `!knowledge correct https://discord.com/channels/${guildId}/${channelId}/${sourceId} ${correction.note}`;
+    await knowledge.registerSource(source(commandId, firstText));
+    await knowledge.commitAnnotation(await prepare());
+    const first = await knowledge.correct({ ...correction, reporterSourceId: commandId });
+    const secondNote = "An amended correction.";
+    await knowledge.registerSource(
+      source(
+        commandId,
+        `!knowledge correct https://discord.com/channels/${guildId}/${channelId}/${sourceId} ${secondNote}`,
+      ),
+    );
+    const second = await knowledge.correct({
+      ...correction,
+      note: secondNote,
+      reporterSourceId: commandId,
+    });
+    assert.notEqual(first.correctionId, second.correctionId);
+    const contexts = await knowledge.correctionReviewContexts(`${manifest.id}:trip`);
+    assert.deepEqual(
+      contexts.map((item) => item.correctionId),
+      [second.correctionId],
+    );
+    assert.equal(
+      (
+        await db.query("SELECT status FROM pilot_knowledge_corrections WHERE id=$1", [
+          first.correctionId,
+        ])
+      ).rows[0].status,
+      "unavailable",
+    );
+    assert.equal(
+      (
+        await db.query(
+          "SELECT detail->>'reason' AS reason FROM pilot_knowledge_receipts WHERE kind='correction-unavailable' AND detail->>'correctionId'=$1",
+          [first.correctionId],
+        )
+      ).rows[0].reason,
+      "reporter-source-changed",
+    );
+  },
+);
+
+databaseTest(
+  "private correction preserves note whitespace for review",
+  async ({ knowledge, prepare }) => {
+    await knowledge.commitAnnotation(await prepare());
+    const note = "  Check the interpretation.  ";
+    const opened = await knowledge.correct({
+      ...correction,
+      reporterId: undefined,
+      reviewOrigin: "private-operator",
+      note,
+    });
+    assert.deepEqual(await knowledge.correctionReviewContexts(`${manifest.id}:trip`), [
+      {
+        correctionId: opened.correctionId,
+        sourceId,
+        reviewOrigin: "private-operator",
+        reviewNote: note,
+      },
+    ]);
+  },
+);
+
+databaseTest(
+  "failed identity migration retains the legacy constraint and records",
+  async ({ db, knowledge }) => {
+    await knowledge.correct(correction);
+    const before = (await db.query("SELECT * FROM pilot_knowledge_corrections ORDER BY id")).rows;
+    const receipts = (await db.query("SELECT * FROM pilot_knowledge_receipts ORDER BY id")).rows;
+    await db.query("DROP INDEX pilot_correction_discord_identity");
+    await db.query("DROP INDEX pilot_correction_revision_identity");
+    await db.query(
+      "ALTER TABLE pilot_knowledge_corrections ADD CONSTRAINT legacy_custom_identity UNIQUE(source_id,note_digest)",
+    );
+    await db.query(
+      "CREATE INDEX pilot_correction_revision_identity ON pilot_knowledge_corrections(source_id)",
+    );
+    await assert.rejects(() => communityKnowledge(db), /unexpected definition/);
+    assert.deepEqual(
+      (await db.query("SELECT * FROM pilot_knowledge_corrections ORDER BY id")).rows,
+      before,
+    );
+    assert.deepEqual(
+      (await db.query("SELECT * FROM pilot_knowledge_receipts ORDER BY id")).rows,
+      receipts,
+    );
+    assert.equal(
+      (
+        await db.query(
+          "SELECT count(*)::int AS n FROM pg_constraint WHERE conname='legacy_custom_identity'",
+        )
+      ).rows[0].n,
+      1,
+    );
+    assert.equal(
+      (await db.query("SELECT to_regclass('pilot_correction_discord_identity') AS index")).rows[0]
+        .index,
+      null,
+    );
+  },
+);
+
+databaseTest(
+  "concurrent retry and guarded review completion use compatible locks",
+  async ({ db, knowledge, prepare }) => {
+    const credentials = JSON.parse(await readFile(join(state, "postgres.json"), "utf8"));
+    const database = (await db.query("SELECT current_database() AS database")).rows[0].database;
+    const other = new pg.Client({ ...credentials, database });
+    await other.connect();
+    try {
+      const restarted = await communityKnowledge(other);
+      await knowledge.commitAnnotation(await prepare());
+      const opened = await knowledge.correct(correction);
+      const reviewed = candidate();
+      const outcome = await knowledge.commitAnnotation(await prepare(reviewed));
+      const [retry, completed] = await Promise.all([
+        restarted.correct(correction),
+        knowledge.completeCorrectionReviews({
+          manifestId: manifest.id,
+          episodeKey: "trip",
+          candidates: [reviewed],
+          outcomes: [outcome],
+          correctionIds: [opened.correctionId],
+        }),
+      ]);
+      assert.ok(["already-open", "already-resolved"].includes(retry.disposition));
+      assert.deepEqual(completed, [{ correctionId: opened.correctionId, status: "reaffirmed" }]);
+    } finally {
+      await other.end();
+    }
+  },
+);
+
+async function waitForSourceLock(client, pid) {
+  for (let attempt = 0; attempt < 100; attempt++) {
+    const state = (
+      await client.query("SELECT wait_event_type FROM pg_stat_activity WHERE pid=$1", [pid])
+    ).rows[0];
+    if (state?.wait_event_type === "Lock") return;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  throw new Error("Timed out waiting for annotation source lock");
+}
+
+databaseTest(
+  "annotation preparation locks direct and reply-parent sources in one order",
+  async ({ db, knowledge }) => {
+    const credentials = JSON.parse(await readFile(join(state, "postgres.json"), "utf8"));
+    const database = (await db.query("SELECT current_database() AS database")).rows[0].database;
+    const pid = (await db.query("SELECT pg_backend_pid() AS pid")).rows[0].pid;
+    const other = new pg.Client({ ...credentials, database });
+    await other.connect();
+    const lockManifest = {
+      ...manifest,
+      id: "lock-order",
+      episodes: [{ ...manifest.episodes[0], sourceIds: [contextId], contextIds: [sourceId] }],
+    };
+    await knowledge.installManifest(lockManifest);
+    await knowledge.registerSource(source(contextId, "Reply to the parent.", sourceId));
+    await other.query("BEGIN");
+    let preparation;
+    try {
+      await other.query("SELECT id FROM pilot_knowledge_sources WHERE id=$1 FOR UPDATE", [
+        sourceId,
+      ]);
+      preparation = knowledge.prepareAnnotation({
+        manifestId: lockManifest.id,
+        episodeKey: "trip",
+        candidate: { ...candidate(), sourceIds: [contextId] },
+      });
+      await waitForSourceLock(other, pid);
+      // The smaller parent is blocked, so the larger direct source must not be held yet.
+      await other.query("SELECT id FROM pilot_knowledge_sources WHERE id=$1 FOR UPDATE NOWAIT", [
+        contextId,
+      ]);
+    } finally {
+      await other.query("ROLLBACK");
+      await other.end();
+    }
+    assert.ok((await preparation).id);
+  },
+);
+
+databaseTest(
+  "annotation preparation rejects a reply parent changed during locking",
+  async ({ db, knowledge }) => {
+    const credentials = JSON.parse(await readFile(join(state, "postgres.json"), "utf8"));
+    const database = (await db.query("SELECT current_database() AS database")).rows[0].database;
+    const pid = (await db.query("SELECT pg_backend_pid() AS pid")).rows[0].pid;
+    const other = new pg.Client({ ...credentials, database });
+    await other.connect();
+    const newParentId = "555555555555555503";
+    const lockManifest = {
+      ...manifest,
+      id: "lock-parent-change",
+      episodes: [
+        { ...manifest.episodes[0], sourceIds: [contextId], contextIds: [sourceId, newParentId] },
+      ],
+    };
+    await knowledge.installManifest(lockManifest);
+    await knowledge.registerSource(source(newParentId, "A new parent."));
+    await knowledge.registerSource(source(contextId, "Reply to the parent.", sourceId));
+    await other.query("BEGIN");
+    let preparation;
+    try {
+      await other.query("SELECT id FROM pilot_knowledge_sources WHERE id=$1 FOR UPDATE", [
+        contextId,
+      ]);
+      preparation = knowledge.prepareAnnotation({
+        manifestId: lockManifest.id,
+        episodeKey: "trip",
+        candidate: { ...candidate(), sourceIds: [contextId] },
+      });
+      const settled = preparation.then(
+        () => null,
+        (error) => error,
+      );
+      await waitForSourceLock(other, pid);
+      await other.query(
+        "UPDATE pilot_knowledge_sources SET source=$2::jsonb,revision=revision+1,generation=generation+1 WHERE id=$1",
+        [contextId, JSON.stringify(source(contextId, "Reply to the parent.", newParentId))],
+      );
+      await other.query("COMMIT");
+      const error = await settled;
+      assert.match(error?.message ?? "", /source changed during preparation/);
+    } finally {
+      await other.query("ROLLBACK").catch(() => {});
+      await other.end();
+    }
   },
 );
