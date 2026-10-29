@@ -162,7 +162,15 @@ const recoveryAuthority = {
   user: "mudfut_history_reader",
 };
 
-async function prepareBoundHistoryWork({ db, knowledge, store, id, directId, contextId }) {
+async function prepareBoundHistoryWork({
+  db,
+  knowledge,
+  store,
+  id,
+  directId,
+  contextId,
+  extraEntries = [],
+}) {
   const episode = { ...manifest.episodes[0], sourceIds: [directId], contextIds: [contextId] };
   const boundManifest = { ...manifest, id, episodes: [episode] };
   await knowledge.installManifest(boundManifest);
@@ -187,6 +195,7 @@ async function prepareBoundHistoryWork({ db, knowledge, store, id, directId, con
       statement: "The speaker prefers the train for this trip.",
       evidence: [{ messageId: directId, quote: direct.content }],
     },
+    ...extraEntries,
   ]);
   const memory = {
     revision: digest("baseline-memory"),
@@ -2260,4 +2269,55 @@ databaseTest(
       "stale-view",
     );
   },
+);
+
+test(
+  "invalid legacy memory quote is isolated during bound history recovery",
+  { skip: process.env.CHECK_DATABASE !== "1" },
+  () =>
+    withRecoveryDatabase(async (ctx) => {
+      const directId = "555555555555555641";
+      const work = await prepareBoundHistoryWork({
+        ...ctx,
+        id: "invalid-quote-recovery",
+        directId,
+        contextId: "555555555555555642",
+        extraEntries: [
+          {
+            key: "legacy-invalid",
+            kind: "statement",
+            subjects: [authorId],
+            statement: "An unsupported historical claim.",
+            evidence: [{ messageId: directId, quote: "A fabricated historical quotation." }],
+          },
+        ],
+      });
+      const recover = () =>
+        reconcilePendingHistoryDerivations(ctx.knowledge, {
+          loadEpisode: async () => ({
+            rows: [{ source: work.direct }],
+            context: [work.context],
+            excluded: [],
+          }),
+          archiveAuthority: async (value) =>
+            archiveAuthorityDigest(value.archiveConnectionId, recoveryAuthority),
+        });
+      const result = await recover();
+      assert.equal(result.status, "excluded");
+      assert.equal(
+        (
+          await ctx.db.query("SELECT derivation_reason FROM pilot_knowledge_episodes WHERE id=$1", [
+            work.batch.historyEpisode,
+          ])
+        ).rows[0].derivation_reason,
+        "committed-memory-source-quote-invalid",
+      );
+      assert.equal(
+        (await ctx.db.query("SELECT count(*)::int AS n FROM pilot_knowledge_annotations")).rows[0]
+          .n,
+        0,
+      );
+      assert.equal(work.memory.content, work.candidate.content);
+      assert.equal((await recover()).disposition, "idle");
+    }),
 );
