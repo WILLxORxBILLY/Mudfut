@@ -98,6 +98,13 @@ test("archive search validates bounded person/topic/date filters before touching
     assert.throws(() => archiveInput(input));
 });
 
+test("archive search rejects a different exact message before storing it", async () => {
+  const h = harness([source(1)], [], new Map([[id(1), message(2)]]));
+  await assert.rejects(h.search({ messageId: id(1) }), /Discord source identity mismatch/);
+  assert.deepEqual(h.ingested, []);
+  assert.deepEqual(h.removed, []);
+});
+
 test("archive evidence survives eight local hits with deduplication and fresh mutation checks", async () => {
   const local = Array.from({ length: 8 }, (_, n) => source(n + 1));
   const archived = [source(1), ...Array.from({ length: 7 }, (_, n) => source(n + 20))];

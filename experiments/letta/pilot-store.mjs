@@ -81,6 +81,7 @@ export function sourceRecord(message, guildId, channelId) {
   if (
     !snowflake(message.id) ||
     message.channel_id !== channelId ||
+    (message.guild_id !== undefined && message.guild_id !== guildId) ||
     !snowflake(message.author?.id) ||
     typeof message.content !== "string" ||
     message.content.length > 16000 ||
