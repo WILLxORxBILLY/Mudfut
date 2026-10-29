@@ -2068,3 +2068,89 @@ databaseTest(
     }
   },
 );
+
+databaseTest(
+  "annotation commit does not lock its job before a correction source",
+  async ({ db, knowledge, prepare }) => {
+    const credentials = JSON.parse(await readFile(join(state, "postgres.json"), "utf8"));
+    const database = (await db.query("SELECT current_database() AS database")).rows[0].database;
+    const pid = (await db.query("SELECT pg_backend_pid() AS pid")).rows[0].pid;
+    const other = new pg.Client({ ...credentials, database });
+    await other.connect();
+    const work = await prepare();
+    await other.query("BEGIN");
+    let commit, lockError;
+    try {
+      await other.query("SELECT id FROM pilot_knowledge_sources WHERE id=$1 FOR UPDATE", [
+        sourceId,
+      ]);
+      commit = knowledge.commitAnnotation(work);
+      await waitForSourceLock(other, pid);
+      try {
+        await other.query("SELECT id FROM pilot_knowledge_jobs WHERE id=$1 FOR UPDATE NOWAIT", [
+          work.id,
+        ]);
+      } catch (error) {
+        lockError = error;
+      }
+    } finally {
+      await other.query("ROLLBACK");
+      await other.end();
+      if (commit) await commit;
+    }
+    assert.equal(lockError, undefined, "commit must not hold the job while waiting for its source");
+  },
+);
+
+databaseTest(
+  "concurrent correction safely invalidates an annotation commit",
+  async ({ db, knowledge, prepare }) => {
+    const credentials = JSON.parse(await readFile(join(state, "postgres.json"), "utf8"));
+    const database = (await db.query("SELECT current_database() AS database")).rows[0].database;
+    const pid = (await db.query("SELECT pg_backend_pid() AS pid")).rows[0].pid;
+    const other = new pg.Client({ ...credentials, database });
+    await other.connect();
+    try {
+      const concurrent = await communityKnowledge(other);
+      const work = await prepare();
+      let signalLocked, releaseLock;
+      const locked = new Promise((resolve) => {
+        signalLocked = resolve;
+      });
+      const resume = new Promise((resolve) => {
+        releaseLock = resolve;
+      });
+      const query = other.query.bind(other);
+      other.query = async (...args) => {
+        const result = await query(...args);
+        if (
+          typeof args[0] === "string" &&
+          args[0].includes("SELECT source,revision,deleted,correction_generation")
+        ) {
+          signalLocked();
+          await resume;
+        }
+        return result;
+      };
+      const opening = concurrent.correct(correction);
+      let committing;
+      try {
+        await locked;
+        committing = knowledge.commitAnnotation(work);
+        await waitForSourceLock(other, pid);
+      } finally {
+        releaseLock();
+      }
+      const [opened, outcome] = await Promise.all([opening, committing]);
+      assert.equal(opened.disposition, "correction-opened");
+      assert.equal(outcome.disposition, "stale-source");
+      assert.equal(
+        (await db.query("SELECT status FROM pilot_knowledge_jobs WHERE id=$1", [work.id])).rows[0]
+          .status,
+        "stale",
+      );
+    } finally {
+      await other.end();
+    }
+  },
+);
