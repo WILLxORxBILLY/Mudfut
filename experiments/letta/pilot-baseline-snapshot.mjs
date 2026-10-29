@@ -106,22 +106,24 @@ const authority =
 
 export async function loadBaseline(directory) {
   const manifest = JSON.parse(await readFile(join(directory, "MANIFEST.json"), "utf8"));
-  if (!manifest?.files || typeof manifest.files !== "object")
+  if (!manifest?.files || typeof manifest.files !== "object" || Array.isArray(manifest.files))
     throw new Error("Baseline manifest is invalid");
+  for (const file of ["cases.json", "memory-before-selection.json", ...sourceFiles])
+    if (!Object.hasOwn(manifest.files, file))
+      throw new Error(`Baseline manifest missing file: ${file}`);
+  const verified = new Map();
   for (const [file, expected] of Object.entries(manifest.files)) {
     if (!/^[a-f0-9]{64}$/.test(expected))
       throw new Error(`Invalid baseline manifest hash: ${file}`);
-    const actual = createHash("sha256")
-      .update(await readFile(join(directory, file)))
-      .digest("hex");
+    const bytes = await readFile(join(directory, file));
+    const actual = createHash("sha256").update(bytes).digest("hex");
     if (actual !== expected) throw new Error(`Baseline manifest checksum mismatch: ${file}`);
+    verified.set(file, bytes);
   }
-  const cases = JSON.parse(await readFile(join(directory, "cases.json"), "utf8"));
+  const cases = JSON.parse(verified.get("cases.json").toString("utf8"));
   if (!Array.isArray(cases.cases) || cases.cases.some((item) => typeof item?.id !== "string"))
     throw new Error("Baseline cases are invalid");
-  const memory = JSON.parse(
-    await readFile(join(directory, "memory-before-selection.json"), "utf8"),
-  );
+  const memory = JSON.parse(verified.get("memory-before-selection.json").toString("utf8"));
   if (
     !memory?.row ||
     typeof memory.row.content !== "string" ||
@@ -132,7 +134,7 @@ export async function loadBaseline(directory) {
   const sourceMap = new Map();
   const packetDigests = {};
   for (const file of sourceFiles) {
-    const bytes = await readFile(join(directory, file));
+    const bytes = verified.get(file);
     packetDigests[file] = createHash("sha256").update(bytes).digest("hex");
     const packet = JSON.parse(bytes);
     if (packet.truncated || (packet.unresolvedParentIds && packet.unresolvedParentIds.length))
