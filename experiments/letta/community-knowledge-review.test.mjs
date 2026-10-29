@@ -1588,6 +1588,17 @@ databaseTest(
   async ({ db, knowledge }) => {
     const old = await knowledge.correct(correction);
     await knowledge.resolveCorrection({ correctionId: old.correctionId, disposition: "rejected" });
+    await knowledge.correct({
+      ...correction,
+      note: "Another open legacy case.",
+      reporterId: undefined,
+    });
+    await knowledge.correct({
+      ...correction,
+      note: "A private legacy case.",
+      reporterId: undefined,
+      reviewOrigin: "private-operator",
+    });
     const before = (await db.query("SELECT * FROM pilot_knowledge_corrections ORDER BY id")).rows;
     const receipts = (await db.query("SELECT * FROM pilot_knowledge_receipts ORDER BY id")).rows;
     await db.query("DROP INDEX pilot_correction_discord_identity");
@@ -1623,13 +1634,52 @@ databaseTest(
       commandId,
       `!knowledge correct https://discord.com/channels/${guildId}/${channelId}/${sourceId} ${correction.note}`,
     );
-    const reporter2 = source("555555555555555598", reporter1.content);
+    const otherAuthor = "333333333333333334";
+    const reporter2 = { ...source("555555555555555598", reporter1.content), authorId: otherAuthor };
+    const reporter3 = source("555555555555555597", reporter1.content);
     await knowledge.registerSource(reporter1);
     await knowledge.registerSource(reporter2);
+    await knowledge.registerSource(reporter3);
     await knowledge.commitAnnotation(await prepare());
     const first = await knowledge.correct({ ...correction, reporterSourceId: reporter1.id });
-    const second = await knowledge.correct({ ...correction, reporterSourceId: reporter2.id });
-    assert.notEqual(first.correctionId, second.correctionId);
+    const second = await knowledge.correct({
+      ...correction,
+      reporterId: otherAuthor,
+      reporterSourceId: reporter2.id,
+    });
+    const third = await knowledge.correct({ ...correction, reporterSourceId: reporter3.id });
+    assert.equal(new Set([first.correctionId, second.correctionId, third.correctionId]).size, 3);
+    const restarted = await communityKnowledge(db);
+    const beforeRetry = (
+      await db.query("SELECT correction_generation FROM pilot_knowledge_sources WHERE id=$1", [
+        sourceId,
+      ])
+    ).rows[0];
+    const beforeReceipts = (
+      await db.query(
+        "SELECT count(*)::int AS n FROM pilot_knowledge_receipts WHERE kind='correction-opened'",
+      )
+    ).rows[0];
+    assert.equal(
+      (await restarted.correct({ ...correction, reporterSourceId: reporter1.id })).disposition,
+      "already-open",
+    );
+    assert.deepEqual(
+      (
+        await db.query("SELECT correction_generation FROM pilot_knowledge_sources WHERE id=$1", [
+          sourceId,
+        ])
+      ).rows[0],
+      beforeRetry,
+    );
+    assert.deepEqual(
+      (
+        await db.query(
+          "SELECT count(*)::int AS n FROM pilot_knowledge_receipts WHERE kind='correction-opened'",
+        )
+      ).rows[0],
+      beforeReceipts,
+    );
     assert.deepEqual(
       (
         await db.query(
@@ -1646,25 +1696,41 @@ databaseTest(
       episodeKey: "trip",
       candidates: [reviewed],
       outcomes: [outcome],
-      correctionIds: [first.correctionId, second.correctionId],
+      correctionIds: [first.correctionId, second.correctionId, third.correctionId],
     });
     assert.deepEqual(
       completed.map((item) => item.status),
-      ["reaffirmed", "reaffirmed"],
+      ["reaffirmed", "reaffirmed", "reaffirmed"],
     );
     assert.equal(
       (await knowledge.correct({ ...correction, reporterSourceId: reporter1.id })).disposition,
       "already-resolved",
+    );
+    assert.deepEqual(
+      (
+        await db.query("SELECT correction_generation FROM pilot_knowledge_sources WHERE id=$1", [
+          sourceId,
+        ])
+      ).rows[0],
+      beforeRetry,
+    );
+    assert.deepEqual(
+      (
+        await db.query(
+          "SELECT count(*)::int AS n FROM pilot_knowledge_receipts WHERE kind='correction-opened'",
+        )
+      ).rows[0],
+      beforeReceipts,
     );
     await knowledge.registerSource(source(sourceId, "The target message was edited."));
     assert.equal(
       (await knowledge.correct({ ...correction, reporterSourceId: reporter1.id })).disposition,
       "already-resolved",
     );
-    const reporter3 = source("555555555555555597", reporter1.content);
-    await knowledge.registerSource(reporter3);
+    const reporter4 = source("555555555555555596", reporter1.content);
+    await knowledge.registerSource(reporter4);
     assert.equal(
-      (await knowledge.correct({ ...correction, reporterSourceId: reporter3.id })).disposition,
+      (await knowledge.correct({ ...correction, reporterSourceId: reporter4.id })).disposition,
       "correction-opened",
     );
     const privateRequest = {
