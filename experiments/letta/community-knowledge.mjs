@@ -1662,6 +1662,20 @@ export async function communityKnowledge(db) {
     let result;
     let affectedViewKeys = [];
     await transaction(async () => {
+      const initial = (
+        await db.query(
+          "SELECT manifest_id,source_ids,status FROM pilot_knowledge_jobs WHERE id=$1",
+          [work?.id],
+        )
+      ).rows[0];
+      if (initial?.status === "prepared") {
+        // Preparation locks manifest, sources, then jobs; correction locks sources before jobs.
+        await manifest(initial.manifest_id, true);
+        await db.query(
+          "SELECT id FROM pilot_knowledge_sources WHERE id=ANY($1::text[]) ORDER BY id FOR UPDATE",
+          [initial.source_ids],
+        );
+      }
       const job = (
         await db.query("SELECT * FROM pilot_knowledge_jobs WHERE id=$1 FOR UPDATE", [work?.id])
       ).rows[0];
