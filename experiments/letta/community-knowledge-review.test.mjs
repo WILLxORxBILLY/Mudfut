@@ -1969,3 +1969,102 @@ databaseTest(
     }
   },
 );
+
+async function waitForSourceLock(client, pid) {
+  for (let attempt = 0; attempt < 100; attempt++) {
+    const state = (
+      await client.query("SELECT wait_event_type FROM pg_stat_activity WHERE pid=$1", [pid])
+    ).rows[0];
+    if (state?.wait_event_type === "Lock") return;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  throw new Error("Timed out waiting for annotation source lock");
+}
+
+databaseTest(
+  "annotation preparation locks direct and reply-parent sources in one order",
+  async ({ db, knowledge }) => {
+    const credentials = JSON.parse(await readFile(join(state, "postgres.json"), "utf8"));
+    const database = (await db.query("SELECT current_database() AS database")).rows[0].database;
+    const pid = (await db.query("SELECT pg_backend_pid() AS pid")).rows[0].pid;
+    const other = new pg.Client({ ...credentials, database });
+    await other.connect();
+    const lockManifest = {
+      ...manifest,
+      id: "lock-order",
+      episodes: [{ ...manifest.episodes[0], sourceIds: [contextId], contextIds: [sourceId] }],
+    };
+    await knowledge.installManifest(lockManifest);
+    await knowledge.registerSource(source(contextId, "Reply to the parent.", sourceId));
+    await other.query("BEGIN");
+    let preparation;
+    try {
+      await other.query("SELECT id FROM pilot_knowledge_sources WHERE id=$1 FOR UPDATE", [
+        sourceId,
+      ]);
+      preparation = knowledge.prepareAnnotation({
+        manifestId: lockManifest.id,
+        episodeKey: "trip",
+        candidate: { ...candidate(), sourceIds: [contextId] },
+      });
+      await waitForSourceLock(other, pid);
+      // The smaller parent is blocked, so the larger direct source must not be held yet.
+      await other.query("SELECT id FROM pilot_knowledge_sources WHERE id=$1 FOR UPDATE NOWAIT", [
+        contextId,
+      ]);
+    } finally {
+      await other.query("ROLLBACK");
+      await other.end();
+    }
+    assert.ok((await preparation).id);
+  },
+);
+
+databaseTest(
+  "annotation preparation rejects a reply parent changed during locking",
+  async ({ db, knowledge }) => {
+    const credentials = JSON.parse(await readFile(join(state, "postgres.json"), "utf8"));
+    const database = (await db.query("SELECT current_database() AS database")).rows[0].database;
+    const pid = (await db.query("SELECT pg_backend_pid() AS pid")).rows[0].pid;
+    const other = new pg.Client({ ...credentials, database });
+    await other.connect();
+    const newParentId = "555555555555555503";
+    const lockManifest = {
+      ...manifest,
+      id: "lock-parent-change",
+      episodes: [
+        { ...manifest.episodes[0], sourceIds: [contextId], contextIds: [sourceId, newParentId] },
+      ],
+    };
+    await knowledge.installManifest(lockManifest);
+    await knowledge.registerSource(source(newParentId, "A new parent."));
+    await knowledge.registerSource(source(contextId, "Reply to the parent.", sourceId));
+    await other.query("BEGIN");
+    let preparation;
+    try {
+      await other.query("SELECT id FROM pilot_knowledge_sources WHERE id=$1 FOR UPDATE", [
+        contextId,
+      ]);
+      preparation = knowledge.prepareAnnotation({
+        manifestId: lockManifest.id,
+        episodeKey: "trip",
+        candidate: { ...candidate(), sourceIds: [contextId] },
+      });
+      const settled = preparation.then(
+        () => null,
+        (error) => error,
+      );
+      await waitForSourceLock(other, pid);
+      await other.query(
+        "UPDATE pilot_knowledge_sources SET source=$2::jsonb,revision=revision+1,generation=generation+1 WHERE id=$1",
+        [contextId, JSON.stringify(source(contextId, "Reply to the parent.", newParentId))],
+      );
+      await other.query("COMMIT");
+      const error = await settled;
+      assert.match(error?.message ?? "", /source changed during preparation/);
+    } finally {
+      await other.query("ROLLBACK").catch(() => {});
+      await other.end();
+    }
+  },
+);

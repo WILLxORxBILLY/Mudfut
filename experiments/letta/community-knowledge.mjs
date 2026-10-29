@@ -770,7 +770,7 @@ export async function communityKnowledge(db) {
   async function sourceRows(ids, lock = false) {
     const rows = (
       await db.query(
-        `SELECT * FROM pilot_knowledge_sources WHERE id=ANY($1::text[])${lock ? " FOR UPDATE" : ""}`,
+        `SELECT * FROM pilot_knowledge_sources WHERE id=ANY($1::text[]) ORDER BY id${lock ? " FOR UPDATE" : ""}`,
         [ids],
       )
     ).rows;
@@ -1508,17 +1508,30 @@ export async function communityKnowledge(db) {
         !annotation.sourceIds.some((id) => episode.sourceIds.includes(id))
       )
         throw new Error("Community annotation must cite the manifest episode targets");
-      const directSources = await sourceRows(annotation.sourceIds, true);
       const directIds = new Set(annotation.sourceIds);
-      const contextIds = new Set(annotation.contextSourceIds ?? []);
-      for (const row of directSources.values()) {
-        const parentId = row.source.replyTo;
-        if (parentId && allowed.has(parentId) && !directIds.has(parentId)) contextIds.add(parentId);
-      }
-      if (contextIds.size !== (annotation.contextSourceIds ?? []).length)
+      const explicitContextIds = new Set(annotation.contextSourceIds ?? []);
+      const addParents = (rows, contextIds) => {
+        for (const row of rows.values()) {
+          const parentId = row.source.replyTo;
+          if (parentId && allowed.has(parentId) && !directIds.has(parentId))
+            contextIds.add(parentId);
+        }
+      };
+      // Discover potential parents without locks, then lock the whole set in source ID order.
+      const possibleContextIds = new Set(explicitContextIds);
+      addParents(await sourceRows(annotation.sourceIds), possibleContextIds);
+      const lockedSources = await sourceRows([...directIds, ...possibleContextIds], true);
+      const contextIds = new Set(explicitContextIds);
+      addParents(new Map([...directIds].map((id) => [id, lockedSources.get(id)])), contextIds);
+      if ([...contextIds].some((id) => !lockedSources.has(id)))
+        throw new Error("Community annotation source changed during preparation; retry");
+      if (
+        contextIds.size !== (annotation.contextSourceIds ?? []).length ||
+        [...contextIds].some((id) => !explicitContextIds.has(id))
+      )
         annotation = validateAnnotation({ ...annotation, contextSourceIds: [...contextIds] });
       const dependencySourceIds = [...annotation.sourceIds, ...(annotation.contextSourceIds ?? [])];
-      const sources = await sourceRows(dependencySourceIds, true);
+      const sources = new Map(dependencySourceIds.map((id) => [id, lockedSources.get(id)]));
       if (
         [...sources.values()].some(
           (row) =>
