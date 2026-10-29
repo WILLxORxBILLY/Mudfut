@@ -81,6 +81,12 @@ export async function discordRead(read) {
   }
 }
 
+function exactDiscordOriginal(message, requestedId) {
+  if (message != null && message.id !== requestedId)
+    throw new Error("Discord source identity mismatch");
+  return message;
+}
+
 export function discordTransport(token, record) {
   // Disable the REST library's automatic 5xx retry: a POST may have succeeded.
   // Its rate-limit scheduling remains enabled. Durable outbox owns send recovery.
@@ -115,7 +121,10 @@ export function discordTransport(token, record) {
     after,
     async get(channelId, messageId) {
       try {
-        return await read(Routes.channelMessage(channelId, messageId));
+        return exactDiscordOriginal(
+          await read(Routes.channelMessage(channelId, messageId)),
+          messageId,
+        );
       } catch (error) {
         if (error.code === 10008) return null;
         throw error;
@@ -282,7 +291,10 @@ export async function currentSources(discord, sources, checkpoint = async () => 
       if (found.has(source.id)) result.set(source.id, found.get(source.id));
       else {
         await checkpoint();
-        result.set(source.id, await discord.get(channelId, source.id));
+        result.set(
+          source.id,
+          exactDiscordOriginal(await discord.get(channelId, source.id), source.id),
+        );
       }
     }
   }
@@ -353,7 +365,10 @@ export function archiveTool(store, discord, config, history) {
     for (const candidate of candidates.values()) {
       // The archive is a search index: only the current Discord original can be
       // quoted. Missing originals invalidate cached dependent understanding.
-      const current = await discord.get(candidate.channelId, candidate.id);
+      const current = exactDiscordOriginal(
+        await discord.get(candidate.channelId, candidate.id),
+        candidate.id,
+      );
       if (!current) {
         await store.remove(candidate.id);
         continue;

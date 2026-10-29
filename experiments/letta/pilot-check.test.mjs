@@ -199,6 +199,15 @@ test("scattered historical validation uses four fresh chronological windows then
   assert.equal(reads, 1, "Preemption before the next page prevents any further historical request");
 });
 
+test("current source reads reject a different exact message identity", async () => {
+  const requested = { id: a, channelId: config.channelId };
+  await assert.rejects(
+    currentSources({ get: async () => message(b) }, [requested]),
+    /Discord source identity mismatch/,
+  );
+  assert.equal((await currentSources({ get: async () => null }, [requested])).get(a), null);
+});
+
 test("latency spans retain async results and failures with monotonic durations", async () => {
   const trace = timingTrace({ scope: "check" });
   assert.equal(await trace.measure("context", async () => 42), 42);

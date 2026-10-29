@@ -16,6 +16,13 @@ const message = {
 };
 assert.equal(discordReplyTo(message, guild, channel), parent);
 assert.equal(sourceRecord(message, guild, channel).replyTo, parent);
+assert.throws(
+  () => sourceRecord({ ...message, guild_id: parent }, guild, channel),
+  /Invalid Discord source message/,
+);
+const { guild_id: _omitted, ...messageWithoutGuild } = message;
+assert.equal(sourceRecord(messageWithoutGuild, guild, channel).guildId, guild);
+
 assert.equal(
   discordReplyTo({ ...message, message_reference: { message_id: parent } }, guild, channel),
   parent,
