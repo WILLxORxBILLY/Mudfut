@@ -4,7 +4,7 @@ import { randomUUID } from "node:crypto";
 import pg from "pg";
 import { state, assertPrivateState } from "./runtime.mjs";
 import { communityKnowledgeStatus, validateArchiveManifest } from "./community-knowledge.mjs";
-import { stageHistoryRequest } from "./pilot-history.mjs";
+import { stageHistoryRequest, validateHistoryPass } from "./pilot-history.mjs";
 import { validateScope } from "./pilot-store.mjs";
 import { activateCommunityManifest } from "./community-knowledge-manifest.mjs";
 
@@ -57,6 +57,7 @@ if (command === "status") {
   assertPrivateState(source);
   const manifest = validateArchiveManifest(await privateJson(source));
   const config = validateScope(await privateJson(join(state, "pilot.json")));
+  validateHistoryPass({ id: manifest.id, episodes: manifest.episodes }, config);
   if (command === "activate") {
     const db = new pg.Client(await privateJson(join(state, "postgres.json")));
     let ownsWorkerLock = false;

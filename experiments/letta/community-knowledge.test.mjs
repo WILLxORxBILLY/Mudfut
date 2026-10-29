@@ -322,6 +322,24 @@ test("community manifests, loose annotations, and Discord command grammar are st
   assert.match(compact, /Page 1 of \d+ · (?:next:|end of current candidates)/);
 });
 
+test("legacy long episode keys project to stable bounded topic labels", () => {
+  const episode = { ...manifest.episodes[0], key: "k".repeat(65) };
+  const entry = {
+    key: "legacy",
+    kind: "plan",
+    subjects: [authorId],
+    statement: "A fictional trip",
+    evidence: [{ messageId: sourceId, quote: "trip" }],
+  };
+  const [candidate] = annotationsFromUnderstanding([entry], episode);
+  assert.match(candidate.topics[0], /^[a-z0-9][a-z0-9-]{0,63}$/);
+  assert.deepEqual(annotationsFromUnderstanding([entry], episode), [candidate]);
+  const [other] = annotationsFromUnderstanding([entry], { ...episode, key: "k".repeat(64) + "z" });
+  assert.notEqual(candidate.topics[0], other.topics[0]);
+  assert.match(candidate.qualifications.join(" "), /digest.*episode key/i);
+  assert.equal(episode.key, "k".repeat(65), "original episode identity is preserved");
+});
+
 test("current view withholds candidates whose sources appear only after refresh", async () => {
   for (const newSourceIsContext of [false, true]) {
     const original = { interpretation: "Original candidate", sources: [{ sourceId }] };

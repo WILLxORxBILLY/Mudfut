@@ -2257,7 +2257,12 @@ export function annotationsFromUnderstanding(
       canonicalTopics.every((topic) => /^[a-z0-9][a-z0-9-]{0,63}$/.test(topic));
     // Older durable entries without per-entry topics use the selected manifest
     // episode key as a visible retrieval label.
-    const topics = validTopics ? canonicalTopics : [episode.key];
+    // Existing manifests can have episode keys longer than a topic slug. Keep
+    // the episode identity and use a stable digest only for its fallback label.
+    const longEpisodeKey = episode.key.length > 64;
+    const topics = validTopics
+      ? canonicalTopics
+      : [longEpisodeKey ? sha256(episode.key) : episode.key];
     const evidence = Array.isArray(entry?.evidence) ? entry.evidence : [];
     const evidenceIds = evidence.map((item) => item?.messageId);
     const sourceIds = [...new Set(evidenceIds)];
@@ -2285,9 +2290,11 @@ export function annotationsFromUnderstanding(
             : []),
           ...(!validTopics
             ? [
-                explicitTopics === null
-                  ? manifestTopicQualification
-                  : invalidMemoryTopicsQualification,
+                longEpisodeKey
+                  ? "Topic label is a stable digest of the selected long episode key; inspect the cited sources."
+                  : explicitTopics === null
+                    ? manifestTopicQualification
+                    : invalidMemoryTopicsQualification,
               ]
             : []),
         ],

@@ -2,7 +2,7 @@ import { readFile, lstat, link, mkdir, rename, unlink, writeFile } from "node:fs
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { validateArchiveManifest } from "./community-knowledge.mjs";
-import { stageHistoryRequest } from "./pilot-history.mjs";
+import { stageHistoryRequest, validateHistoryPass } from "./pilot-history.mjs";
 
 const activeName = "community-knowledge-manifest.json";
 const archiveDirectory = "community-knowledge-manifests";
@@ -45,6 +45,7 @@ export async function activeCommunityManifest(directory) {
 // A worker must be stopped by the caller: it caches the active manifest at startup.
 export async function activateCommunityManifest(directory, input, config) {
   const next = validateArchiveManifest(input);
+  validateHistoryPass({ id: next.id, episodes: next.episodes }, config);
   const active = await activeCommunityManifest(directory);
   const archive = join(directory, archiveDirectory);
   await mkdir(archive, { recursive: true, mode: 0o700 });
