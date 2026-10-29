@@ -2214,6 +2214,7 @@ databaseTest(
   async ({ db, knowledge, prepare }) => {
     const valid = { ...candidate(), sourceQuotes: [{ sourceId, quote: "prefer the train" }] };
     await knowledge.commitAnnotation(await prepare(valid));
+    await knowledge.commitAnnotation(await prepare({ ...valid, id: "valid-neighbor" }));
     const prepared = await knowledge.prepareExport({ target: "profile", key: authorId });
     const bad = { ...valid, sourceQuotes: [{ sourceId, quote: "fabricated quote" }] };
     await db.query("UPDATE pilot_knowledge_annotations SET candidate=$2::jsonb WHERE id=$1", [
@@ -2221,15 +2222,21 @@ databaseTest(
       JSON.stringify(bad),
     ]);
     const current = await knowledge.view("profile", authorId);
-    assert.equal(current.entries.length, 0);
+    assert.deepEqual(
+      current.entries.map((entry) => entry.annotationId),
+      ["valid-neighbor"],
+    );
     assert.equal(current.unavailableCandidateCount, 1);
+    assert.equal(current.status, "candidate interpretations with incomplete source evidence");
     assert.deepEqual(
       (await db.query("SELECT candidate FROM pilot_knowledge_annotations WHERE id=$1", [valid.id]))
         .rows[0].candidate.sourceQuotes,
       bad.sourceQuotes,
     );
     const oldDocument = structuredClone(prepared.document);
-    oldDocument.entries[0].sources[0].quoteSpans = ["fabricated quote"];
+    oldDocument.entries.find((entry) => entry.annotationId === valid.id).sources[0].quoteSpans = [
+      "fabricated quote",
+    ];
     const oldDigest = canonicalDigest(oldDocument);
     await db.query(
       "UPDATE pilot_knowledge_views SET document=$3::jsonb,document_digest=$4 WHERE target=$1 AND key=$2",

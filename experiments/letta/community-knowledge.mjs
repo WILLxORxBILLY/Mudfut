@@ -1371,7 +1371,9 @@ export async function communityKnowledge(db) {
     const document = {
       target,
       key,
-      status: "candidate interpretations with cited current sources",
+      status: unsupportedQuotes.size
+        ? "candidate interpretations with incomplete source evidence"
+        : "candidate interpretations with cited current sources",
       entries,
       ...(unsupportedQuotes.size
         ? { incomplete: true, unavailableCandidateCount: unsupportedQuotes.size }
