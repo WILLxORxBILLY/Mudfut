@@ -56,10 +56,12 @@ validation before a retry is accepted. If a reporter message is removed or edite
 so it no longer matches its case, the case is retained as unavailable with an audit
 receipt; a matching new message or amended request can be reviewed independently.
 
-Stored annotation records are preserved. If a legacy candidate contains a quoted
-span that does not occur in its current source, current views withhold that
-candidate and report incomplete evidence; old prepared exports containing such
-quotes are rejected. Inspect the retained source and annotation before review.
+Stored annotation and memory records are preserved. If a legacy candidate contains
+a quoted span that does not occur in its current source, or uses a correction
+request as evidence, current views withhold it and report incomplete evidence;
+old prepared exports with unsupported evidence are rejected. Retained memory
+reads also withhold correction requests used directly as evidence, while preserving
+prior lineage. Inspect the retained source and annotation before review.
 
 The database initialization migrates the former source-and-note uniqueness constraint
 atomically without changing correction rows or receipts. Once multiple cases share a

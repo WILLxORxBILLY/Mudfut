@@ -170,11 +170,12 @@ async function prepareBoundHistoryWork({
   directId,
   contextId,
   extraEntries = [],
+  directContent = "I prefer the train for this trip.",
 }) {
   const episode = { ...manifest.episodes[0], sourceIds: [directId], contextIds: [contextId] };
   const boundManifest = { ...manifest, id, episodes: [episode] };
   await knowledge.installManifest(boundManifest);
-  const direct = source(directId, "I prefer the train for this trip.");
+  const direct = source(directId, directContent);
   const context = source(contextId, "We discussed taking the train together.");
   await store.ingest(direct, false, false);
   await store.ingest(context, false, false);
@@ -2392,4 +2393,134 @@ databaseTest(
       await replacement.end();
     }
   },
+);
+
+databaseTest(
+  "annotations reject correction requests as evidence but allow review context",
+  async ({ knowledge, prepare }) => {
+    const command = `!knowledge correct https://discord.com/channels/${guildId}/${channelId}/${sourceId} The trip was cancelled.`;
+    await knowledge.registerSource(source(sourceId, command));
+    await assert.rejects(() => prepare(candidate()), /correction request.*review context/i);
+    await knowledge.registerSource(source());
+    await knowledge.registerSource(source(contextId, command));
+    const contextual = {
+      ...candidate(),
+      contextSourceIds: [contextId],
+      claims: [
+        {
+          id: "context",
+          text: "A request was made.",
+          anchors: [
+            { sourceId: contextId, quote: command, relation: "context", attributedTo: authorId },
+          ],
+        },
+      ],
+    };
+    const promoted = structuredClone(contextual);
+    promoted.claims[0].anchors[0].relation = "supports";
+    await assert.rejects(() => prepare(promoted), /correction request.*review context/i);
+    assert.equal(
+      (await knowledge.commitAnnotation(await prepare(contextual))).disposition,
+      "applied",
+    );
+    assert.equal((await knowledge.view("topic", "trip")).entries.length, 1);
+  },
+);
+
+databaseTest(
+  "legacy correction-backed annotations remain stored but cannot commit or render",
+  async ({ db, knowledge, prepare }) => {
+    const command = `!knowledge correct https://discord.com/channels/${guildId}/${channelId}/${sourceId} The trip was cancelled.`;
+    const work = await prepare();
+    await db.query("UPDATE pilot_knowledge_sources SET source=$2::jsonb WHERE id=$1", [
+      sourceId,
+      JSON.stringify(source(sourceId, command)),
+    ]);
+    assert.equal((await knowledge.commitAnnotation(work)).disposition, "stale-source");
+    await db.query("UPDATE pilot_knowledge_sources SET source=$2::jsonb WHERE id=$1", [
+      sourceId,
+      JSON.stringify(source()),
+    ]);
+    await knowledge.commitAnnotation(await prepare());
+    const prepared = await knowledge.prepareExport({ target: "topic", key: "trip" });
+    await db.query("UPDATE pilot_knowledge_sources SET source=$2::jsonb WHERE id=$1", [
+      sourceId,
+      JSON.stringify(source(sourceId, command)),
+    ]);
+    const current = await knowledge.view("topic", "trip");
+    assert.equal(current.entries.length, 0);
+    assert.equal(current.unavailableCandidateCount, 1);
+    assert.equal(
+      (await db.query("SELECT count(*)::int AS n FROM pilot_knowledge_annotations")).rows[0].n,
+      1,
+    );
+    const oldDocument = structuredClone(prepared.document);
+    oldDocument.entries[0].sources[0].exactQuote = command;
+    const oldDigest = canonicalDigest(oldDocument);
+    await db.query(
+      "UPDATE pilot_knowledge_views SET document=$3::jsonb,document_digest=$4 WHERE target=$1 AND key=$2",
+      [prepared.target, prepared.key, JSON.stringify(oldDocument), oldDigest],
+    );
+    const revision = (
+      await db.query("SELECT revision FROM pilot_knowledge_views WHERE target=$1 AND key=$2", [
+        prepared.target,
+        prepared.key,
+      ])
+    ).rows[0].revision;
+    assert.equal(
+      (
+        await knowledge.commitExport({
+          ...prepared,
+          viewRevision: revision,
+          document: oldDocument,
+          documentDigest: oldDigest,
+        })
+      ).disposition,
+      "stale-view",
+    );
+  },
+);
+
+test(
+  "historical correction-command memory is excluded before annotation projection",
+  { skip: process.env.CHECK_DATABASE !== "1" },
+  () =>
+    withRecoveryDatabase(async (ctx) => {
+      const directId = "555555555555555641";
+      const command = `!knowledge correct https://discord.com/channels/${guildId}/${channelId}/${sourceId} The trip was cancelled.`;
+      const work = await prepareBoundHistoryWork({
+        ...ctx,
+        id: "correction-evidence-recovery",
+        directId,
+        contextId: "555555555555555642",
+        directContent: command,
+      });
+      const recover = () =>
+        reconcilePendingHistoryDerivations(ctx.knowledge, {
+          loadEpisode: async () => ({
+            rows: [{ source: work.direct }],
+            context: [work.context],
+            excluded: [],
+          }),
+          archiveAuthority: async (value) =>
+            archiveAuthorityDigest(value.archiveConnectionId, recoveryAuthority),
+        });
+      const result = await recover();
+      assert.equal(result.status, "excluded");
+      assert.equal(
+        (
+          await ctx.db.query("SELECT derivation_reason FROM pilot_knowledge_episodes WHERE id=$1", [
+            work.batch.historyEpisode,
+          ])
+        ).rows[0].derivation_reason,
+        "committed-memory-correction-request-evidence",
+      );
+      assert.equal(
+        (await ctx.db.query("SELECT count(*)::int AS n FROM pilot_knowledge_annotations")).rows[0]
+          .n,
+        0,
+      );
+      assert.equal(work.memory.content, work.candidate.content);
+      assert.equal((await recover()).disposition, "idle");
+    }),
 );
