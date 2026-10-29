@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { digest } from "./pilot-store.mjs";
 import {
   memoryHistoryEvidence,
+  memoryHistorySourceIds,
   decodeUnderstanding,
   encodeUnderstanding,
   memoryPatchSession,
@@ -289,6 +290,45 @@ test("memory reads refresh predecessor dependencies as well as direct quotes", a
       available.delete(first.id);
     }),
     /Memory evidence changed or disappeared/,
+  );
+});
+
+test("legacy nested lineage and historical versions require all retained sources", async () => {
+  const revised = entry("legacy-revision", second, second.content, {
+    lineage: { sourceIds: [first.id, second.id] },
+  });
+  const requested = [];
+  const available = new Map(sources);
+  const result = await readUnderstanding(
+    snapshot([revised]),
+    { keys: [revised.key] },
+    available,
+    async (ids) => requested.push(...ids),
+  );
+  assert.deepEqual(new Set(requested), new Set([first.id, second.id]));
+  assert.deepEqual(result.entries[0].lineage.sourceIds, [first.id, second.id]);
+  const row = {
+    id: "1",
+    key: revised.key,
+    is_current: true,
+    entry: revised,
+    source_ids: [first.id, second.id, other.id],
+    tombstone: false,
+    audit: {},
+  };
+  assert.deepEqual(
+    new Set(memoryHistorySourceIds([row])),
+    new Set([first.id, second.id, other.id]),
+  );
+  const incomplete = new Map([[second.id, second]]);
+  assert.equal(memoryHistoryEvidence([row], incomplete, [revised])[0].entry, null);
+  assert.match(
+    memoryHistoryEvidence([row], available, [revised])[0].status,
+    /current understanding/,
+  );
+  assert.match(
+    memoryHistoryEvidence([{ ...row, is_current: false }], available, [])[0].status,
+    /superseded understanding/,
   );
 });
 

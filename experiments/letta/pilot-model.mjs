@@ -12,6 +12,7 @@ import {
   evidenceIds,
   memoryLimits,
   memoryHistoryEvidence,
+  memoryHistorySourceIds,
 } from "./pilot-memory.mjs";
 import { digest } from "./pilot-store.mjs";
 import { timingTrace } from "./pilot-timing.mjs";
@@ -661,12 +662,7 @@ export async function pilotModel(
                 },
                 async (input) => {
                   const rows = await memory.versions({ key: input.key, limit: input.limit ?? 6 });
-                  const priorEntries = rows
-                    .filter((r) => r.entry && !r.tombstone)
-                    .map((r) => r.entry);
-                  await lookup([
-                    ...new Set(priorEntries.flatMap((e) => e.evidence.map((r) => r.messageId))),
-                  ]);
+                  await lookup(memoryHistorySourceIds(rows));
                   return {
                     key: input.key,
                     versions: memoryHistoryEvidence(
