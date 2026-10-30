@@ -190,3 +190,37 @@ test("only addressed human messages after quiet bootstrap are eligible", () => {
     false,
   );
 });
+
+test("reaction transport encodes custom emoji and reports Discord rate limits and missing messages", async () => {
+  const { discordTransport } = await import("./pilot-discord.mjs");
+  const original = globalThis.fetch;
+  const requests = [];
+  let response = { ok: true, status: 204, headers: new Headers() };
+  globalThis.fetch = async (url, options) => {
+    requests.push({ url, options });
+    return response;
+  };
+  try {
+    const transport = discordTransport("fictional-token", async () => {});
+    await transport.react(
+      "222222222222222222",
+      "111111111111111112",
+      "mudfut",
+      "333333333333333333",
+    );
+    assert.match(requests[0].url, /mudfut%3A333333333333333333\/@me$/);
+    assert.equal(requests[0].options.method, "PUT");
+    response = { ok: false, status: 429, headers: new Headers({ "retry-after": "1.25" }) };
+    await assert.rejects(
+      transport.react("222222222222222222", "111111111111111112", "mudfut", "333333333333333333"),
+      (error) => error.status === 429 && error.retryAfterMs === 1250,
+    );
+    response = { ok: false, status: 404, headers: new Headers() };
+    await assert.rejects(
+      transport.react("222222222222222222", "111111111111111112", "mudfut", "333333333333333333"),
+      (error) => error.status === 404,
+    );
+  } finally {
+    globalThis.fetch = original;
+  }
+});
