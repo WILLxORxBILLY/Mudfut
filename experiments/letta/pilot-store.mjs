@@ -188,8 +188,8 @@ export async function pilotStore(db, config, { discoverySince } = {}) {
       "Pilot live channel differs from persisted configuration; use a separate state/database",
     );
   await db.query(
-    `UPDATE pilot_sources SET learnable=false,learned=true WHERE source->>'guildId'<>$1
-      OR NOT ${liveEndpointSql}`,
+    `UPDATE pilot_sources SET learnable=false,learned=true
+      WHERE (learnable OR NOT learned) AND (source->>'guildId'<>$1 OR NOT ${liveEndpointSql})`,
     [config.guildId, replyChannels(config), config.replyScope === "guild"],
   );
   // Preserve the original cursor while migrating to independent channel progress.

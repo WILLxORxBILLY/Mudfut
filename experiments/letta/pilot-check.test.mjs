@@ -1396,3 +1396,53 @@ test(
     }
   },
 );
+
+test(
+  "startup eligibility does not rewrite rows already classified",
+  { skip: process.env.CHECK_DATABASE !== "1" },
+  async () => {
+    const db = new pg.Client(JSON.parse(await readFile(join(state, "postgres.json"), "utf8")));
+    await db.connect();
+    const schema = "startup_eligibility_" + Date.now();
+    await db.query(`CREATE SCHEMA ${schema}`);
+    await db.query(`SET search_path TO ${schema}`);
+    try {
+      await pilotStore(db, config);
+      const otherGuild = "999999999999999999";
+      const rows = [
+        ["555555555555555701", otherGuild, false, true],
+        ["555555555555555702", otherGuild, true, false],
+        ["555555555555555703", otherGuild, false, false],
+        ["555555555555555704", config.guildId, true, false],
+      ];
+      for (const [id, guildId, learnable, learned] of rows)
+        await db.query(
+          "INSERT INTO pilot_sources(id,source,hash,learnable,learned) VALUES($1,$2,$3,$4,$5)",
+          [id, { guildId, channelId: config.channelId }, id, learnable, learned],
+        );
+      const oldXmin = (
+        await db.query("SELECT xmin::text AS version FROM pilot_sources WHERE id=$1", [rows[0][0]])
+      ).rows[0].version;
+      await db.query("SELECT pg_advisory_unlock(1560387,1127029)");
+      await pilotStore(db, config);
+      const result = (
+        await db.query(
+          "SELECT id,learnable,learned,xmin::text AS version FROM pilot_sources ORDER BY id",
+        )
+      ).rows;
+      assert.equal(result[0].version, oldXmin, "already-classified row must not be rewritten");
+      assert.deepEqual(
+        result.map(({ learnable, learned }) => [learnable, learned]),
+        [
+          [false, true],
+          [false, true],
+          [false, true],
+          [true, false],
+        ],
+      );
+    } finally {
+      await db.query(`DROP SCHEMA ${schema} CASCADE`);
+      await db.end();
+    }
+  },
+);
