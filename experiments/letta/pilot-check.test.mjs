@@ -1188,7 +1188,15 @@ test(
     const schema = "guild_routes_" + Date.now();
     await db.query(`CREATE SCHEMA ${schema}`);
     await db.query(`SET search_path TO ${schema}`);
-    const scope = { ...config, replyScope: "guild" },
+    const scope = {
+        ...config,
+        replyScope: "guild",
+        acknowledgment: {
+          emojiName: "avatar",
+          emojiId: "888888888888888888",
+          sinceId: "555555555555555600",
+        },
+      },
       text = "222222222222222230",
       thread = "555555555555555610",
       cutoff = "555555555555555600";
@@ -1233,6 +1241,7 @@ test(
         [text],
       );
       let meta = await store.meta();
+      assert.deepEqual(meta.scope.acknowledgment, scope.acknowledgment);
       assert.equal(meta.cursors[config.channelId], a);
       assert.equal(meta.cursors[text], cutoff);
       assert.equal(meta.cursors[thread], cutoff);
