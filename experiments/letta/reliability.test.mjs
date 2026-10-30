@@ -178,7 +178,7 @@ test("endpoint read denials retain failed diagnostics while healthy channels con
         results,
       ),
   );
-  assert.deepEqual(outcome, { messages: [healthy], emptyChannelIds: [] });
+  assert.deepEqual(outcome, { cursors, messages: [healthy], emptyChannelIds: [] });
   assert.equal(saved.length, 1);
   assert.equal(saved[0].polls[channelId].ok, true);
   assert.equal(saved[0].polls[threadId].ok, false);
@@ -203,7 +203,7 @@ test("endpoint read denials retain failed diagnostics while healthy channels con
   assert.deepEqual(outcome.emptyChannelIds, []);
   const recovered = { ...healthy, id: "555555555555555502", channel_id: threadId };
   const recoveredMessages = await poll({ after: async () => [], recent: async () => [recovered] });
-  assert.deepEqual(recoveredMessages, { messages: [recovered], emptyChannelIds: [] });
+  assert.deepEqual(recoveredMessages, { cursors, messages: [recovered], emptyChannelIds: [] });
 
   for (const failure of [
     { status: 401, code: 50001 },

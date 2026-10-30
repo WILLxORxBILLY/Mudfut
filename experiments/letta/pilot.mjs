@@ -26,6 +26,12 @@ import {
   discoveryBoundary,
 } from "./pilot-live-channels.mjs";
 import { timingTrace } from "./pilot-timing.mjs";
+import {
+  acknowledgments,
+  eligibleAcknowledgment,
+  recoverAcknowledgments,
+  validateAcknowledgment,
+} from "./pilot-acknowledgment.mjs";
 import { currentHistoryEpisode, historyQueue } from "./pilot-history.mjs";
 import { operatorRequests } from "./pilot-requests.mjs";
 import { historicalFailureClass } from "./pilot-history-failures.mjs";
@@ -87,6 +93,7 @@ let history,
   stopping = false,
   connectionFailure,
   timing,
+  ack,
   phase = "startup";
 const stop = () => {
   stopping = true;
@@ -125,12 +132,48 @@ try {
     const store = await pilotStore(db, config, {
       discoverySince: discoveryBoundary(discord.serverTime()),
     });
+    if (config.acknowledgment && mode === "run") {
+      try {
+        validateAcknowledgment(config.acknowledgment);
+        ack = acknowledgments({
+          initial: await optionalJson("acknowledgments.json"),
+          save: (receipt) => saveJson(join(state, "acknowledgments.json"), receipt),
+          react: (channelId, messageId) =>
+            discord.react(
+              channelId,
+              messageId,
+              config.acknowledgment.emojiName,
+              config.acknowledgment.emojiId,
+            ),
+          record,
+        });
+      } catch (error) {
+        await record({ type: "acknowledgment_disabled", error: safeError(error) }).catch(() => {});
+      }
+    }
+    if (ack) {
+      try {
+        await recoverAcknowledgments({
+          db,
+          ack,
+          guildId: config.guildId,
+          sinceId: config.acknowledgment.sinceId,
+          serverTime: discord.serverTime(),
+          record,
+        });
+      } catch (error) {
+        await record({ type: "acknowledgment_recovery_failed", error: safeError(error) }).catch(
+          () => {},
+        );
+      }
+    }
     const channelPlan = await liveChannelPlan(discord, config);
     const polls = channelPollStatus(config, channelPlan.routes, {
       initial: await optionalJson("channel-polls.json"),
       save: (snapshot) => saveJson(join(state, "channel-polls.json"), snapshot),
     });
-    let liveConfig = config;
+    let liveConfig = config,
+      lastPollCursors = {};
     knowledge = await communityKnowledge(db);
     try {
       knowledgeManifest = validateArchiveManifest(
@@ -234,18 +277,29 @@ try {
         discovered.channelIds,
         (results) => polls.polled(discovered, results),
       );
+      lastPollCursors = outcome.cursors;
       await pulse("live_poll_complete");
       return outcome;
     };
     const pollMessages = async () => (await pollFresh()).messages;
+    const offerAcknowledgment = (source) => {
+      if (!ack) return;
+      try {
+        ack.offer(source, discord.serverTime(), config.acknowledgment.sinceId);
+      } catch (error) {
+        void record({ type: "acknowledgment_failed", error: safeError(error) }).catch(() => {});
+      }
+    };
     const isUrgent = async (messages) => {
-      for (const message of messages)
-        if (
-          !message.author.bot &&
-          [0, 19].includes(message.type) &&
-          (await store.isAddressed(liveSource(message, liveConfig), bot.id, discord.get))
-        )
+      for (const message of messages) {
+        if (message.author.bot || ![0, 19].includes(message.type)) continue;
+        const source = liveSource(message, liveConfig);
+        if (await store.isAddressed(source, bot.id, discord.get)) {
+          if (eligibleAcknowledgment(message, source, lastPollCursors, true))
+            offerAcknowledgment(source);
           return true;
+        }
+      }
       return false;
     };
     const checkpoint = livePriorityCheckpoint({ poll: pollMessages, isUrgent });
@@ -402,6 +456,8 @@ try {
               !knowledgeCommand &&
               Boolean(meta.cursors[source.channelId]) &&
               (await store.isAddressed(source, bot.id, discord.get));
+            if (eligibleAcknowledgment(message, source, meta.cursors, addressed))
+              offerAcknowledgment(source);
             await store.ingest(source, addressed, !knowledgeCommand);
             await syncKnowledgeSource(knowledge, source);
             const commandHandled =
@@ -640,6 +696,7 @@ try {
   console.error(safeError(failure));
   process.exitCode = stopping && !connectionFailure ? 0 : retryable ? 75 : 78;
 } finally {
+  ack?.stop();
   const cleanup = await boundedCleanup([
     model?.close(),
     history?.end(),

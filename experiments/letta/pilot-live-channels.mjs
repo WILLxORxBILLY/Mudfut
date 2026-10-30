@@ -54,6 +54,7 @@ export async function pollLiveChannels(
   const failed = pages.find((page) => page.status === "rejected");
   if (failed) throw failed.reason;
   return {
+    cursors,
     messages: pages
       .flatMap((page) => page.value.messages)
       .sort((a, b) => (BigInt(a.id) < BigInt(b.id) ? -1 : 1)),
