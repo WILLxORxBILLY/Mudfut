@@ -8,6 +8,7 @@ import { state } from "./runtime.mjs";
 import { digest } from "./pilot-store.mjs";
 import { decodeUnderstanding, encodeUnderstanding } from "./pilot-memory.mjs";
 import { postgresUnderstanding } from "./pilot-memory-postgres.mjs";
+import { evaluationMemory } from "./pilot-evaluation-memory.mjs";
 
 const entry = (
   key,
@@ -27,6 +28,64 @@ const entry = (
 test("PostgreSQL memory requires the existing identity before accessing legacy state", async () => {
   await assert.rejects(postgresUnderstanding({}, {}), /existing agent identity/);
 });
+
+test(
+  "evaluation memory starts empty, persists native revisions and reopens without legacy fallback",
+  { skip: process.env.CHECK_DATABASE !== "1" },
+  async () => {
+    const credentials = JSON.parse(await readFile(join(state, "postgres.json"), "utf8"));
+    const admin = new pg.Client(credentials);
+    await admin.connect();
+    const database = "mudfut_eval_check_" + randomUUID().replaceAll("-", "");
+    let db;
+    try {
+      await admin.query(`CREATE DATABASE ${database}`);
+      db = new pg.Client({ ...credentials, database });
+      await db.connect();
+      const memory = await evaluationMemory(
+        db,
+        {
+          read: async () => ({ content: "", revision: digest("") }),
+          write: async () => assert.fail("Evaluation must not write legacy memory"),
+        },
+        { agentId: "fictional-evaluation-agent" },
+      );
+      const initial = await memory.read();
+      assert.deepEqual(decodeUnderstanding(initial.content), []);
+      assert.equal(memory.migrationReceipt.entryCount, 0);
+      const first = entry("travel", "The fictional member prefers the train");
+      const committed = await memory.write({
+        content: encodeUnderstanding([first]),
+        expectedRevision: initial.revision,
+      });
+      assert.equal(committed.storage, "PostgreSQL");
+      await db.end();
+      db = new pg.Client({ ...credentials, database });
+      await db.connect();
+      const reopened = await evaluationMemory(
+        db,
+        { read: async () => assert.fail("Existing PostgreSQL memory must remain authoritative") },
+        { agentId: "fictional-evaluation-agent" },
+      );
+      assert.equal((await reopened.read()).revision, committed.revision);
+      const revised = entry("travel", "The fictional member now prefers cycling", [
+        "555555555555555502",
+      ]);
+      await reopened.write({
+        content: encodeUnderstanding([revised]),
+        expectedRevision: committed.revision,
+      });
+      const versions = await reopened.versions({ key: "travel", limit: 8 });
+      assert.equal(versions.length, 2);
+      assert.equal(versions[0].entry.statement, revised.statement);
+      assert.equal(versions[1].entry.statement, first.statement);
+    } finally {
+      await db?.end();
+      await admin.query(`DROP DATABASE IF EXISTS ${database} WITH (FORCE)`);
+      await admin.end();
+    }
+  },
+);
 
 test(
   "lossless PostgreSQL migration, revision history, capacity growth and mutation recovery",
