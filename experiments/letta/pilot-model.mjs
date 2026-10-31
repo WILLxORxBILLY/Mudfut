@@ -22,7 +22,7 @@ import {
   turnInput,
   turnExpectsReply,
   replyEvidence,
-  recallQuery,
+  recallOptions,
 } from "./pilot-reply.mjs";
 import { toolLifecycle, inlineApplicationTools } from "./pilot-tool-lifecycle.mjs";
 import { formatReply, turnCancellation } from "./pilot-reply-format.mjs";
@@ -296,6 +296,8 @@ export async function pilotModel(
               includeInferences: { type: "boolean" },
               subjects: {
                 type: "array",
+                description:
+                  "Optional stable person IDs to filter by. Direct questions default to topic matches across members, not just the asker. Supply the asker's ID for a question specifically about their own views; do not guess another member's identity.",
                 maxItems: 8,
                 items: { type: "string", pattern: "^[0-9]{17,20}$" },
               },
@@ -323,19 +325,7 @@ export async function pilotModel(
                   input.keys.some((key) => typeof key !== "string" || key.length > 100)))
             )
               throw new Error("Invalid memory query");
-            return readUnderstanding(
-              repair.draft,
-              {
-                ...input,
-                query: recallQuery(input, batch),
-                subjects:
-                  input.subjects ??
-                  (input.query === undefined ? batch.rows.map((r) => r.source.authorId) : []),
-                includeInferences: input.includeInferences ?? true,
-              },
-              supplied,
-              lookup,
-            );
+            return readUnderstanding(repair.draft, recallOptions(input, batch), supplied, lookup);
           },
         ),
         ...(knowledgeViews
