@@ -646,24 +646,30 @@ export async function pilotStore(db, config, { discoverySince } = {}) {
       const trigger = (await db.query("SELECT source FROM pilot_sources WHERE id=$1", [beforeId]))
         .rows[0]?.source;
       const channelId = trigger?.channelId ?? config.channelId;
+      const replyParent = trigger?.replyTo ?? null;
+      // Keep an explicit reply parent inside the existing context budget, even
+      // when newer conversation has pushed it out of the ordinary recent window.
       const recent = (
         await db.query(
-          `SELECT source FROM pilot_sources WHERE NOT deleted
-        AND source->>'channelId'=$1 AND id::numeric < $2::numeric ORDER BY id::numeric DESC LIMIT 8`,
-          [channelId, beforeId],
+          `SELECT source FROM (
+        SELECT id,source FROM pilot_sources WHERE NOT deleted
+        AND source->>'channelId'=$1 AND id::numeric < $2::numeric
+        ORDER BY CASE WHEN id=$3 THEN 0 ELSE 1 END,id::numeric DESC LIMIT 8
+        ) selected ORDER BY id::numeric`,
+          [channelId, beforeId, replyParent],
         )
-      ).rows
-        .reverse()
-        .map((r) => ({ kind: "source", ...r.source }));
+      ).rows.map((r) => ({ kind: "source", ...r.source }));
       const replies = (
         await db.query(
-          `SELECT source_id,content FROM pilot_outbox WHERE status='sent'
+          `SELECT source_id,discord_id,content FROM (
+        SELECT source_id,discord_id,content FROM pilot_outbox WHERE status='sent'
         AND epoch=(SELECT epoch FROM pilot_meta) AND source_id::numeric < $1::numeric
         AND EXISTS(SELECT 1 FROM pilot_sources s WHERE s.id=source_id AND s.source->>'channelId'=$2)
-        ORDER BY source_id::numeric DESC LIMIT 4`,
-          [beforeId, channelId],
+        ORDER BY CASE WHEN discord_id=$3 THEN 0 ELSE 1 END,source_id::numeric DESC LIMIT 4
+        ) selected ORDER BY source_id::numeric`,
+          [beforeId, channelId, replyParent],
         )
-      ).rows.reverse();
+      ).rows;
       return {
         priorMessages: recent,
         priorBotReplies: replies,
