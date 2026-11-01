@@ -10,6 +10,19 @@ export const recallQuery = (input, batch) =>
 
 export const turnExpectsReply = (batch) => Boolean(batch.replyTo || batch.operatorRequest);
 
+export const recallOptions = (input, batch) => ({
+  ...input,
+  query: recallQuery(input, batch),
+  // A question's author is not necessarily its subject. Default direct recall
+  // must not hide another member's answer or a competing community viewpoint.
+  subjects:
+    input.subjects ??
+    (input.query === undefined && !turnExpectsReply(batch)
+      ? batch.rows.map((r) => r.source.authorId)
+      : []),
+  includeInferences: input.includeInferences ?? true,
+});
+
 export const communityKnowledgeEvidence = (result) => ({
   target: result.target,
   key: result.key,

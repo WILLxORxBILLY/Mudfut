@@ -173,9 +173,12 @@ export function understandingStore(directory) {
   };
 }
 
-const tokens = (text) => new Set(text.toLowerCase().match(/[\p{L}\p{N}]{3,}/gu) ?? []);
+const tokens = (text) => new Set(text.toLowerCase().match(/[\p{L}\p{N}]{2,}/gu) ?? []);
 function rankUnderstanding(entries, { query = "", subjects = [], includeInferences = true } = {}) {
   const words = tokens(query);
+  // Short topics such as AI/EU are searchable. An explicit query that produces
+  // no tokens is still a search, not permission to return unrelated memories.
+  const hasQuery = query.trim().length > 0;
   // ponytail: lexical/member retrieval over the active snapshot is O(n), with
   // bounded context. PostgreSQL text/vector ranking is the upgrade at large scale.
   return entries
@@ -187,11 +190,11 @@ function rankUnderstanding(entries, { query = "", subjects = [], includeInferenc
       const person = entry.subjects.some((id) => subjects.includes(id));
       return {
         entry,
-        relevant: words.size && subjects.length ? overlap > 0 && person : overlap > 0 || person,
+        relevant: hasQuery && subjects.length ? overlap > 0 && person : overlap > 0 || person,
         score: overlap * 4 + (person ? 6 : 0) + entry.importance / 10,
       };
     })
-    .filter((r) => r.relevant || (!words.size && !subjects.length))
+    .filter((r) => r.relevant || (!hasQuery && !subjects.length))
     .sort((a, b) => b.score - a.score || b.entry.updated.localeCompare(a.entry.updated));
 }
 

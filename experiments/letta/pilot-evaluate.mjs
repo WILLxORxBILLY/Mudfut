@@ -7,7 +7,9 @@ import { join } from "node:path";
 import { state, assertPrivateState, safeError } from "./runtime.mjs";
 import { pilotStore, sourceRecord, validateScope, snowflake } from "./pilot-store.mjs";
 import { pilotModel, record } from "./pilot-model.mjs";
-import { encodeUnderstanding, decodeUnderstanding } from "./pilot-memory.mjs";
+import { decodeUnderstanding } from "./pilot-memory.mjs";
+import { evaluationMemory } from "./pilot-evaluation-memory.mjs";
+import { durableCandidate } from "./pilot-reply.mjs";
 
 process.umask(0o077);
 assertPrivateState(state);
@@ -22,9 +24,11 @@ const config = validateScope(episode.config);
 if (episode.botId !== undefined && !snowflake(episode.botId))
   throw new Error("Invalid evaluation bot ID");
 const db = new pg.Client(connection);
+const memoryDb = new pg.Client(connection);
 let model;
 try {
   await db.connect();
+  await memoryDb.connect();
   const store = await pilotStore(db, config);
   if (phase === "learn" && (await db.query("SELECT 1 FROM pilot_sources LIMIT 1")).rowCount)
     throw new Error(
@@ -38,27 +42,32 @@ try {
       memoryOnly: true,
       sourceLookup: store.findSources,
       botId: episode.botId ?? "444444444444444444",
+      memoryFactory: (legacy, { agentId }) =>
+        evaluationMemory(memoryDb, legacy, { agentId, record }),
     },
   );
   const initial = await model.memory.read();
-  if (!initial.content)
-    await model.memory.write({
-      content: encodeUnderstanding([]),
-      expectedRevision: initial.revision,
-    });
-  if (!decodeUnderstanding((await model.memory.read()).content))
-    throw new Error("Unexpected evaluation memory format");
-  await record({ type: "evaluation_phase", phase, label: episode.label, publicDelivery: false });
+  if (!decodeUnderstanding(initial.content)) throw new Error("Unexpected evaluation memory format");
+  await record({
+    type: "evaluation_phase",
+    phase,
+    label: episode.label,
+    memoryStorage: "PostgreSQL",
+    archiveSearch: false,
+    discordValidation: false,
+    publicDelivery: false,
+  });
   const turn = async (batch) => {
     const epoch = (await store.meta()).epoch;
     const result = await model.turn(batch, epoch);
-    await store.prepare(epoch, batch, result.candidate, result.reply);
+    await store.prepare(epoch, batch, durableCandidate(batch, result), result.reply);
     await store.finish(model.memory);
     await record({
       type: "evaluation_result",
       phase,
       reply: result.reply,
       decisions: result.candidate.audit,
+      replyEvidence: result.replyEvidence,
       memory: await model.memory.read(),
     });
     console.log(
@@ -116,6 +125,9 @@ try {
   await record({ type: "evaluation_failure", phase, error: safeError(error) });
   throw error;
 } finally {
-  await model?.close();
-  await db.end();
+  try {
+    await model?.close();
+  } finally {
+    await Promise.all([memoryDb.end(), db.end()]);
+  }
 }

@@ -52,6 +52,75 @@ const a = "555555555555555501",
   b = "555555555555555502",
   c = "555555555555555503";
 
+test(
+  "explicit reply parents survive bounded context without crossing channels or reviving stale replies",
+  { skip: process.env.CHECK_DATABASE !== "1" },
+  async () => {
+    const db = new pg.Client(JSON.parse(await readFile(join(state, "postgres.json"), "utf8")));
+    await db.connect();
+    const schema = "reply_context_" + Date.now();
+    await db.query(`CREATE SCHEMA ${schema}`);
+    await db.query(`SET search_path TO ${schema}`);
+    const otherChannel = "222222222222222223";
+    const id = (n) => String(555555555555555600n + BigInt(n));
+    const source = (n, parentId, channelId = config.channelId) =>
+      sourceRecord(
+        {
+          ...message(id(n), `Fictional message ${n}`),
+          channel_id: channelId,
+          type: parentId ? 19 : 0,
+          message_reference: parentId ? { message_id: parentId } : undefined,
+        },
+        config.guildId,
+        channelId,
+      );
+    try {
+      const store = await pilotStore(db, {
+        ...config,
+        replyChannelIds: [config.channelId, otherChannel],
+      });
+      await store.ingest(source(1));
+      await store.queueReply(id(1), "The original fictional bot answer.");
+      await db.query("UPDATE pilot_outbox SET status='sent',discord_id=$1", [id(2)]);
+      await store.ingest(source(3, undefined, otherChannel));
+      for (let n = 10; n < 20; n++) {
+        await store.ingest(source(n));
+        await store.queueReply(id(n), `Later bot answer ${n}`);
+        await db.query("UPDATE pilot_outbox SET status='sent',discord_id=$2 WHERE source_id=$1", [
+          id(n),
+          id(n + 20),
+        ]);
+      }
+      await store.ingest(source(100, id(1)), true);
+      const humanContext = await store.context(id(100));
+      assert.equal(humanContext.priorMessages.length, 8);
+      assert.ok(
+        humanContext.priorMessages.some((s) => s.id === id(1)),
+        "an explicit member reply parent must not fall out of the recent-message window",
+      );
+      await store.ingest(source(101, id(2)), true);
+      const botContext = await store.context(id(101));
+      assert.equal(botContext.priorBotReplies.length, 4);
+      assert.deepEqual(
+        botContext.priorBotReplies.find((r) => r.discord_id === id(2)),
+        { source_id: id(1), discord_id: id(2), content: "The original fictional bot answer." },
+        "the exact older bot reply needs its Discord identity as well as its content",
+      );
+      await store.ingest(source(102, id(3)), true);
+      assert.ok(!(await store.context(id(102))).priorMessages.some((s) => s.id === id(3)));
+      await db.query("UPDATE pilot_sources SET deleted=true WHERE id=$1", [id(1)]);
+      assert.ok(!(await store.context(id(100))).priorMessages.some((s) => s.id === id(1)));
+      await db.query("UPDATE pilot_outbox SET epoch=epoch+1 WHERE source_id=$1", [id(1)]);
+      assert.ok(
+        !(await store.context(id(101))).priorBotReplies.some((r) => r.discord_id === id(2)),
+      );
+    } finally {
+      await db.query(`DROP SCHEMA ${schema} CASCADE`);
+      await db.end();
+    }
+  },
+);
+
 test("fresh channel pages validate recent sources; absent evidence still gets an exact read", async () => {
   let pages = 0;
   const exact = [];
