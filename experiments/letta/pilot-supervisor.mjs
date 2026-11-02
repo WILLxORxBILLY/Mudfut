@@ -3,7 +3,15 @@ import { readFile, rm } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
-import { state, root, assertPrivateState, saveJson, safeError, runtimeModel } from "./runtime.mjs";
+import {
+  state,
+  root,
+  assertPrivateState,
+  saveJson,
+  safeError,
+  runtimeModel,
+  providerQuotaExhausted,
+} from "./runtime.mjs";
 import { record } from "./pilot-model.mjs";
 
 export const recoveryPolicy = {
@@ -23,6 +31,9 @@ export function boundedCleanup(cleanups, timeoutMs = 20000) {
 export function retryableFailure(error) {
   const status = error?.status ?? error?.statusCode;
   const message = safeError(error);
+  // Account quota cannot be repaired by restarting the worker, even when the
+  // model backend wraps it as HTTP 500 or marks the model phase retryable.
+  if (providerQuotaExhausted(error)) return false;
   if (
     [401, 403].includes(status) ||
     /invalid.grant|unauthorized|forbidden|invalid.*credential|refresh.token.*(expired|revoked)/i.test(

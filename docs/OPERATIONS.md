@@ -11,6 +11,14 @@ Preserve both the current database and any prepared work/unsent delivery before
 changing routes or restoring a backup. Do not restore an old database snapshot
 over newer memory without quantifying the data-loss interval.
 
+Explicit provider quota exhaustion holds on the first failed attempt, including
+quota errors wrapped by the model backend as HTTP 500. A worker restart cannot
+replenish account quota. Preserve the failure receipt, check provider capacity,
+and deliberately resume only after the condition is resolved. Ordinary temporary
+HTTP 429 throttling and retryable service outages retain bounded retries.
+Quota errors are infrastructure failures; historical episodes retain their
+existing state and receipts.
+
 The `pilot-service.mjs` installer is an optional macOS user LaunchAgent. It is
 not a portable Linux service manager; use foreground operation or your own
 reviewed service configuration elsewhere. Its default service identity supports
