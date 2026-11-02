@@ -29,42 +29,47 @@ export function boundedCleanup(cleanups, timeoutMs = 20000) {
   });
 }
 export function retryableFailure(error) {
-  const status = error?.status ?? error?.statusCode;
-  const message = safeError(error);
   // Account quota cannot be repaired by restarting the worker, even when the
   // model backend wraps it as HTTP 500 or marks the model phase retryable.
   if (providerQuotaExhausted(error)) return false;
-  if (
-    [401, 403].includes(status) ||
-    /invalid.grant|unauthorized|forbidden|invalid.*credential|refresh.token.*(expired|revoked)/i.test(
-      message,
+  const seen = new Set();
+  for (let failure = error; failure && !seen.has(failure); failure = failure.cause) {
+    seen.add(failure);
+    const status = failure.status ?? failure.statusCode;
+    const message = safeError(failure);
+    if (
+      [401, 403].includes(status) ||
+      /invalid.grant|unauthorized|forbidden|invalid.*credential|refresh.token.*(expired|revoked)/i.test(
+        message,
+      )
     )
-  )
-    return false;
-  return (
-    error?.retryable === true ||
-    [408, 429].includes(status) ||
-    status >= 500 ||
-    [
-      "ECONNRESET",
-      "ECONNREFUSED",
-      "ENETUNREACH",
-      "EHOSTUNREACH",
-      "ETIMEDOUT",
-      "EAI_AGAIN",
-      "UND_ERR_CONNECT_TIMEOUT",
-      "UND_ERR_SOCKET",
-      "57P01",
-      "57P02",
-      "57P03",
-      "08006",
-      "08003",
-    ].includes(error?.code) ||
-    /timed? ?out|timeout|fetch failed|socket|connection (terminated|closed)|temporar|overloaded|\b(429|500|502|503|504)\b/i.test(
-      message,
-    ) ||
-    Boolean(error?.cause && retryableFailure(error.cause))
-  );
+      return false;
+    if (
+      failure.retryable === true ||
+      [408, 429].includes(status) ||
+      status >= 500 ||
+      [
+        "ECONNRESET",
+        "ECONNREFUSED",
+        "ENETUNREACH",
+        "EHOSTUNREACH",
+        "ETIMEDOUT",
+        "EAI_AGAIN",
+        "UND_ERR_CONNECT_TIMEOUT",
+        "UND_ERR_SOCKET",
+        "57P01",
+        "57P02",
+        "57P03",
+        "08006",
+        "08003",
+      ].includes(failure.code) ||
+      /timed? ?out|timeout|fetch failed|socket|connection (terminated|closed)|temporar|overloaded|\b(429|500|502|503|504)\b/i.test(
+        message,
+      )
+    )
+      return true;
+  }
+  return false;
 }
 export function recoveryDecision(previous, exit, now = Date.now(), policy = recoveryPolicy) {
   // Slow failures must not age out and permit an endless sequence of hangs.
