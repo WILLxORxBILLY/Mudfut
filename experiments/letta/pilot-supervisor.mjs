@@ -23,6 +23,18 @@ export function boundedCleanup(cleanups, timeoutMs = 20000) {
 export function retryableFailure(error) {
   const status = error?.status ?? error?.statusCode;
   const message = safeError(error);
+  // Account quota cannot be repaired by restarting the worker, even when the
+  // model backend wraps it as HTTP 500 or marks the model phase retryable.
+  const seen = new Set();
+  for (let failure = error; failure && !seen.has(failure); failure = failure.cause) {
+    seen.add(failure);
+    if (
+      /\b(usage_limit_reached|usage_not_included|insufficient_quota)\b|\busage limit (?:has been )?reached\b/i.test(
+        `${failure.code ?? ""} ${safeError(failure)}`,
+      )
+    )
+      return false;
+  }
   if (
     [401, 403].includes(status) ||
     /invalid.grant|unauthorized|forbidden|invalid.*credential|refresh.token.*(expired|revoked)/i.test(

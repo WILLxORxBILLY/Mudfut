@@ -67,6 +67,50 @@ test("retry classification and a latched persisted budget distinguish outages fr
   );
 });
 
+test("explicit quota exhaustion holds without spending the transient restart budget", () => {
+  for (const failure of [
+    { message: "Codex error: The usage limit has been reached", retryable: true },
+    {
+      status: 503,
+      retryable: true,
+      cause: new Error("Codex error: The usage limit has been reached"),
+    },
+    {
+      status: 500,
+      retryable: true,
+      message: JSON.stringify({
+        error: {
+          type: "local_backend_error",
+          message: "Codex error: The usage limit has been reached",
+        },
+      }),
+    },
+    ...["usage_limit_reached", "usage_not_included", "insufficient_quota"].map((code) => ({
+      code,
+      status: 429,
+      retryable: true,
+      message: "Provider request failed",
+    })),
+  ]) {
+    assert.equal(retryableFailure(failure), false);
+    const previous = { failures: [100], held: false };
+    const decision = recoveryDecision(
+      previous,
+      { code: retryableFailure(failure) ? 75 : 78, signal: null },
+      200,
+    );
+    assert.equal(decision.held, true);
+    assert.equal(decision.nextAttemptAt, null);
+    assert.deepEqual(decision.failures, [100, 200]);
+    assert.deepEqual(previous.failures, [100]);
+  }
+  assert.equal(
+    retryableFailure({ status: 429, code: "rate_limit_exceeded", message: "Too many requests" }),
+    true,
+  );
+  assert.equal(retryableFailure({ status: 503, message: "Provider temporarily overloaded" }), true);
+});
+
 test("only stable progress by the matching worker resets its persisted failure budget", async () => {
   const directory = await mkdtemp(join(tmpdir(), "mudfut-stable-"));
   const previous = { failures: [1, 2], workerPid: 123, workerStartedAt: 1000 };
