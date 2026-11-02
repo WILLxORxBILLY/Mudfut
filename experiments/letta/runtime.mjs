@@ -118,3 +118,17 @@ export function safeError(error) {
     .replace(/eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/g, "[redacted token]")
     .replace(/sk-[A-Za-z0-9_-]+/g, "[redacted key]");
 }
+
+export function providerQuotaExhausted(error) {
+  const seen = new Set();
+  for (let failure = error; failure && !seen.has(failure); failure = failure.cause) {
+    seen.add(failure);
+    if (
+      /\b(usage_limit_reached|usage_not_included|insufficient_quota)\b|\busage limit (?:has been )?reached\b/i.test(
+        `${failure.code ?? ""} ${safeError(failure)}`,
+      )
+    )
+      return true;
+  }
+  return false;
+}

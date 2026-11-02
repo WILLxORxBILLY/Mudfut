@@ -5,7 +5,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawn, execFileSync } from "node:child_process";
 import pg from "pg";
-import { state } from "./runtime.mjs";
+import { state, providerQuotaExhausted } from "./runtime.mjs";
+import { historicalFailureClass } from "./pilot-history-failures.mjs";
 import { setTimeout as delay } from "node:timers/promises";
 import {
   recoveryDecision,
@@ -93,6 +94,7 @@ test("explicit quota exhaustion holds without spending the transient restart bud
     })),
   ]) {
     assert.equal(retryableFailure(failure), false);
+    assert.equal(historicalFailureClass(failure, { phase: "model" }), "infrastructure");
     const previous = { failures: [100], held: false };
     const decision = recoveryDecision(
       previous,
@@ -109,6 +111,11 @@ test("explicit quota exhaustion holds without spending the transient restart bud
     true,
   );
   assert.equal(retryableFailure({ status: 503, message: "Provider temporarily overloaded" }), true);
+  const cyclic = {};
+  cyclic.cause = cyclic;
+  assert.equal(providerQuotaExhausted(cyclic), false);
+  cyclic.code = "usage_limit_reached";
+  assert.equal(providerQuotaExhausted(cyclic), true);
 });
 
 test("only stable progress by the matching worker resets its persisted failure budget", async () => {

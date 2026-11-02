@@ -1,4 +1,4 @@
-import { safeError } from "./runtime.mjs";
+import { safeError, providerQuotaExhausted } from "./runtime.mjs";
 import { digest } from "./pilot-store.mjs";
 
 export const historyFailureSchema = `
@@ -28,6 +28,7 @@ export const historyFailureSchema = `
 export function historicalFailureClass(error, { stopping = false, phase } = {}) {
   if (stopping) return "shutdown";
   if (["HISTORY_PREEMPTED", "HISTORY_QUEUE_YIELD"].includes(error?.code)) return "preempted";
+  if (providerQuotaExhausted(error)) return "infrastructure";
   let cause = error;
   for (let depth = 0; cause && depth < 5; depth++, cause = cause.cause) {
     const status = cause.status ?? cause.statusCode;
