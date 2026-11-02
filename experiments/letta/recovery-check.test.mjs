@@ -118,6 +118,28 @@ test("explicit quota exhaustion holds without spending the transient restart bud
   assert.equal(providerQuotaExhausted(cyclic), true);
 });
 
+test("retry classification terminates on cyclic and deeply nested error causes", () => {
+  const self = {};
+  self.cause = self;
+  assert.equal(retryableFailure(self), false);
+
+  const wrapped = { cause: {} };
+  wrapped.cause.cause = wrapped;
+  assert.equal(retryableFailure(wrapped), false);
+  wrapped.cause.code = "ECONNRESET";
+  assert.equal(retryableFailure(wrapped), true);
+  wrapped.status = 401;
+  assert.equal(retryableFailure(wrapped), false);
+  wrapped.status = 503;
+  wrapped.cause.code = "usage_limit_reached";
+  assert.equal(retryableFailure(wrapped), false);
+
+  let deep = {};
+  for (let i = 0; i < 10000; i++) deep = { cause: deep };
+  assert.equal(retryableFailure(deep), false);
+  assert.equal(retryableFailure({ cause: { code: "ETIMEDOUT", cause: deep } }), true);
+});
+
 test("only stable progress by the matching worker resets its persisted failure budget", async () => {
   const directory = await mkdtemp(join(tmpdir(), "mudfut-stable-"));
   const previous = { failures: [1, 2], workerPid: 123, workerStartedAt: 1000 };
