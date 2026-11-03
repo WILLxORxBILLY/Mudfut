@@ -170,7 +170,7 @@ export async function pilotModel(
       const used = new Set(supplied.keys());
       const audits = [];
       const toolBoundary = toolLifecycle();
-      const deadline = Date.now() + 150000;
+      const deadline = Date.now() + (expectsReply ? 150000 : 300000);
       const registerSources = (sources) => {
         for (const source of sources) {
           supplied.set(source.id, source);
