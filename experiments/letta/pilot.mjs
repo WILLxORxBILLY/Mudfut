@@ -475,6 +475,7 @@ try {
             await record({ type: "discord_source", source, addressed, commandHandled });
           }
           await store.cursor(message.id, message.channel_id);
+          await pulse("live_ingest_complete");
         }
         // Only this cycle's successful empty reads activate an uninitialized channel.
         for (const channelId of polled.emptyChannelIds)
