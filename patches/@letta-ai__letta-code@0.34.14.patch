@@ -64,6 +64,32 @@ diff --git a/letta.js b/letta.js
    const scope = provider.clientMetadata.scope;
    let tokenRequestParams;
    if (provider.prepareTokenRequest) {
+@@ -226860,6 +226902,8 @@
+     return parts.length === 0 ? [""] : parts;
+   }
+   firstPhasePreProcess(globParts) {
++    // ponytail: backport upstream preprocessing bounds; replace with a fixed upstream bundle.
++    const { braceExpandMax = 100000 } = this.options;
+     let didSomething = false;
+     do {
+       didSomething = false;
+@@ -226878,7 +226922,7 @@
+           const p22 = parts[gs + 3];
+           if (next !== "..")
+             continue;
+-          if (!p2 || p2 === "." || p2 === ".." || !p22 || p22 === "." || p22 === "..") {
++          if (!p2 || p2 === "." || p2 === ".." || !p22 || p22 === "." || p22 === ".." || globParts.length >= braceExpandMax) {
+             continue;
+           }
+           didSomething = true;
+@@ -226922,6 +226966,7 @@
+     return globParts;
+   }
+   secondPhasePreProcess(globParts) {
++    if (globParts.length > 1000) return globParts;
+     for (let i4 = 0;i4 < globParts.length - 1; i4++) {
+       for (let j2 = i4 + 1;j2 < globParts.length; j2++) {
+         const matched = this.partsMatch(globParts[i4], globParts[j2], !this.preserveMultipleSlashes);
 diff --git a/dist/mcp-client.js b/dist/mcp-client.js
 --- a/dist/mcp-client.js
 +++ b/dist/mcp-client.js

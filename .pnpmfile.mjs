@@ -20,6 +20,8 @@ export const hooks = {
         "brace-expansion@^5": "5.0.12",
         "fast-uri@3.1.8": "3.1.9",
         "qs@6.16.0": "6.16.1",
+        // ponytail: cross-major override for this pinned SDK; replace after an upstream compatible upgrade.
+        "@letta-ai/letta-code@0.34.14>glob": "14.0.3",
       },
       patchedDependencies: {
         ...config.patchedDependencies,
