@@ -38,3 +38,5 @@ jobs:
           MUDFUT_PG_BIN: /usr/lib/postgresql/16/bin
           MUDFUT_CODEX_AUTH_FILE: /nonexistent/no-model-credentials
         run: pnpm letta:fixtures
+      - name: Record tested source identity
+        run: pnpm --silent release:preflight

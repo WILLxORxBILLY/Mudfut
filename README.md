@@ -93,6 +93,10 @@ without them; [historical archive access](docs/ARCHIVE.md) is optional.
 
 ## Checks without model credentials
 
+For the development workflow, see [contributing](CONTRIBUTING.md). The
+[release foundation](docs/RELEASES.md) documents local source-identity inspection
+and the remaining CI, immutable-candidate, deployment and rollback gates.
+
 ```sh
 pnpm test
 # Install PostgreSQL 16 server binaries first; run as a regular user, not root.
