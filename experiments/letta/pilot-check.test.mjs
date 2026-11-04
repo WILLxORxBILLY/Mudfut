@@ -52,6 +52,285 @@ const a = "555555555555555501",
   b = "555555555555555502",
   c = "555555555555555503";
 
+async function withReplyHoldStore(label, run) {
+  const db = new pg.Client(JSON.parse(await readFile(join(state, "postgres.json"), "utf8")));
+  const schema = `reply_hold_${label}_${Date.now()}`;
+  await db.connect();
+  try {
+    await db.query(`CREATE SCHEMA ${schema}`);
+    await db.query(`SET search_path TO ${schema}`);
+    const store = await pilotStore(db, config);
+    for (const id of [a, b, c])
+      await store.ingest(sourceRecord(message(id), config.guildId, config.channelId), true);
+    await run(store, db);
+  } finally {
+    try {
+      await db.query(`DROP SCHEMA ${schema} CASCADE`);
+    } finally {
+      await db.end();
+    }
+  }
+}
+
+test(
+  "low-level reply enqueue rejects held sources without changing their reasons",
+  { skip: process.env.CHECK_DATABASE !== "1" },
+  () =>
+    withReplyHoldStore("enqueue", async (store, db) => {
+      await db.query("INSERT INTO pilot_source_holds(source_id,reason) VALUES($1,$2)", [
+        a,
+        "Fictional operator review: keep this reason",
+      ]);
+      const held = (await db.query("SELECT * FROM pilot_source_holds WHERE source_id=$1", [a]))
+        .rows;
+      await assert.rejects(
+        store.queueReply(a, "A fictional deterministic reply"),
+        /source is held/i,
+      );
+      assert.equal(
+        (await db.query("SELECT count(*)::int n FROM pilot_outbox WHERE source_id=$1", [a])).rows[0]
+          .n,
+        0,
+      );
+      assert.deepEqual(
+        (await db.query("SELECT * FROM pilot_source_holds WHERE source_id=$1", [a])).rows,
+        held,
+      );
+      assert.equal((await store.queueReply(b, "An unheld fictional reply")).queued, true);
+    }),
+);
+
+test(
+  "a hold arriving before the enqueue insert prevents a new outbox row",
+  { skip: process.env.CHECK_DATABASE !== "1" },
+  () =>
+    withReplyHoldStore("enqueue_race", async (store, db) => {
+      const query = db.query.bind(db);
+      let inserted = false;
+      db.query = async (...args) => {
+        const result = await query(...args);
+        if (args[0] === "SELECT * FROM pilot_meta" && !inserted) {
+          inserted = true;
+          await query("INSERT INTO pilot_source_holds(source_id,reason) VALUES($1,$2)", [
+            a,
+            "Fictional hold before enqueue insert",
+          ]);
+        }
+        return result;
+      };
+      try {
+        assert.equal((await store.queueReply(a, "A fictional late-blocked reply")).queued, false);
+        assert.equal((await query("SELECT count(*)::int n FROM pilot_outbox")).rows[0].n, 0);
+      } finally {
+        db.query = query;
+      }
+    }),
+);
+
+test(
+  "dispatch holds ready and interrupted replies when their source was held after enqueue",
+  { skip: process.env.CHECK_DATABASE !== "1" },
+  () =>
+    withReplyHoldStore("dispatch", async (store, db) => {
+      for (const id of [a, b, c])
+        await store.queueReply(id, "A fictional queued reply", { fixture: "source-hold" });
+      await db.query(
+        "UPDATE pilot_outbox SET status='sending',attempted_at=$2,error=$3 WHERE source_id=$1",
+        [b, "2026-01-01T00:00:00Z", "Fictional uncertain acknowledgement: retain this diagnostic"],
+      );
+      const before = new Map(
+        (await db.query("SELECT * FROM pilot_outbox")).rows.map((row) => [row.source_id, row]),
+      );
+      for (const id of [a, b])
+        await db.query("INSERT INTO pilot_source_holds(source_id,reason) VALUES($1,$2)", [
+          id,
+          `Fictional hold for ${id}`,
+        ]);
+      const originalHolds = (await db.query("SELECT * FROM pilot_source_holds ORDER BY source_id"))
+        .rows;
+      const sends = [];
+      let reads = 0;
+      const discord = {
+        send: async (_channel, body) => {
+          sends.push(body.message_reference.message_id);
+          return { id: "555555555555555599" };
+        },
+        after: async () => {
+          reads++;
+          return [];
+        },
+      };
+      await deliver(store, discord, "bot", config.channelId, async () => {});
+      assert.deepEqual(sends, [c], "held replies must not reach the send callback");
+      assert.equal(reads, 0, "held interrupted replies must not perform recovery reads");
+      const after = new Map(
+        (await db.query("SELECT * FROM pilot_outbox")).rows.map((row) => [row.source_id, row]),
+      );
+      assert.deepEqual(after.get(a), {
+        ...before.get(a),
+        status: "held",
+        error: "Source is held; do not send automatically",
+      });
+      assert.deepEqual(after.get(b), { ...before.get(b), status: "held" });
+      assert.equal(after.get(c).status, "sent");
+      const terminal = (await db.query("SELECT * FROM pilot_outbox ORDER BY source_id")).rows;
+      await db.query("INSERT INTO pilot_source_holds(source_id,reason) VALUES($1,$2)", [
+        c,
+        "Fictional hold after confirmed send",
+      ]);
+      await deliver(store, discord, "bot", config.channelId, async () => {});
+      assert.deepEqual(
+        (await db.query("SELECT * FROM pilot_outbox ORDER BY source_id")).rows,
+        terminal,
+      );
+      assert.deepEqual(
+        (await db.query("SELECT * FROM pilot_source_holds ORDER BY source_id")).rows.slice(0, 2),
+        originalHolds,
+      );
+      assert.deepEqual(sends, [c]);
+      assert.equal(reads, 0);
+    }),
+);
+
+test(
+  "a source hold arriving during dispatch prevents the ready reply claim",
+  { skip: process.env.CHECK_DATABASE !== "1" },
+  () =>
+    withReplyHoldStore("claim", async (store, db) => {
+      await store.queueReply(a, "A fictional reply held before its send claim");
+      let metaReads = 0;
+      const guarded = {
+        ...store,
+        meta: async () => {
+          const meta = await store.meta();
+          if (++metaReads === 2)
+            await db.query("INSERT INTO pilot_source_holds(source_id,reason) VALUES($1,$2)", [
+              a,
+              "Fictional late dispatch hold",
+            ]);
+          return meta;
+        },
+      };
+      let sends = 0;
+      await deliver(
+        guarded,
+        {
+          send: async () => {
+            sends++;
+            return { id: "555555555555555599" };
+          },
+        },
+        "bot",
+        config.channelId,
+        async () => {},
+      );
+      assert.equal(sends, 0);
+      assert.equal(
+        (await db.query("SELECT status FROM pilot_outbox WHERE source_id=$1", [a])).rows[0].status,
+        "held",
+      );
+    }),
+);
+
+test(
+  "a hold during interrupted-send lookup cannot be overwritten by reconciliation",
+  { skip: process.env.CHECK_DATABASE !== "1" },
+  () =>
+    withReplyHoldStore("reconcile", async (store, db) => {
+      await store.queueReply(a, "A fictional interrupted reply");
+      await db.query("UPDATE pilot_outbox SET status='sending',error=$2 WHERE source_id=$1", [
+        a,
+        "Fictional uncertainty retained",
+      ]);
+      let sends = 0,
+        records = 0;
+      await deliver(
+        store,
+        {
+          send: async () => {
+            sends++;
+            throw new Error("Unexpected send");
+          },
+          after: async () => {
+            await db.query("INSERT INTO pilot_source_holds(source_id,reason) VALUES($1,$2)", [
+              a,
+              "Fictional hold during lookup",
+            ]);
+            return [
+              {
+                id: "555555555555555599",
+                author: { id: "bot" },
+                message_reference: { message_id: a },
+              },
+            ];
+          },
+        },
+        "bot",
+        config.channelId,
+        async () => {
+          records++;
+        },
+      );
+      assert.equal(sends, 0);
+      assert.equal(records, 0);
+      const row = (
+        await db.query("SELECT status,discord_id,error FROM pilot_outbox WHERE source_id=$1", [a])
+      ).rows[0];
+      assert.deepEqual(row, {
+        status: "held",
+        discord_id: null,
+        error: "Fictional uncertainty retained",
+      });
+    }),
+);
+
+test(
+  "enqueue and dispatch fail closed when the durable hold check fails",
+  { skip: process.env.CHECK_DATABASE !== "1" },
+  () =>
+    withReplyHoldStore("lookup", async (store, db) => {
+      const query = db.query.bind(db);
+      const failHoldCheck = async (...args) => {
+        if (String(args[0]).includes("pilot_source_holds"))
+          throw new Error("Fictional hold lookup unavailable");
+        return query(...args);
+      };
+      try {
+        db.query = failHoldCheck;
+        await assert.rejects(
+          store.queueReply(a, "A fictional blocked reply"),
+          /hold lookup unavailable/,
+        );
+        assert.equal((await query("SELECT count(*)::int n FROM pilot_outbox")).rows[0].n, 0);
+        db.query = query;
+        await store.queueReply(a, "A fictional pending reply");
+        db.query = failHoldCheck;
+        let sends = 0;
+        await assert.rejects(
+          deliver(
+            store,
+            {
+              send: async () => {
+                sends++;
+              },
+            },
+            "bot",
+            config.channelId,
+            async () => {},
+          ),
+          /hold lookup unavailable/,
+        );
+        assert.equal(sends, 0);
+        assert.equal(
+          (await query("SELECT status FROM pilot_outbox WHERE source_id=$1", [a])).rows[0].status,
+          "ready",
+        );
+      } finally {
+        db.query = query;
+      }
+    }),
+);
+
 test(
   "explicit reply parents survive bounded context without crossing channels or reviving stale replies",
   { skip: process.env.CHECK_DATABASE !== "1" },
