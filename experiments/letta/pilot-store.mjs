@@ -464,9 +464,15 @@ export async function pilotStore(db, config, { discoverySince } = {}) {
         await db.query("SELECT deleted FROM pilot_sources WHERE id=$1 FOR UPDATE", [sourceId])
       ).rows[0];
       if (!source || source.deleted) throw new Error("Deterministic reply source is unavailable");
+      if (
+        (await db.query("SELECT 1 FROM pilot_source_holds WHERE source_id=$1", [sourceId])).rowCount
+      )
+        throw new Error("Deterministic reply source is held");
       const epoch = (await meta()).epoch;
       const result = await db.query(
-        `INSERT INTO pilot_outbox(source_id,content,epoch,receipt) VALUES($1,$2,$3,$4::jsonb)
+        `INSERT INTO pilot_outbox(source_id,content,epoch,receipt)
+         SELECT $1,$2,$3,$4::jsonb
+         WHERE NOT EXISTS(SELECT 1 FROM pilot_source_holds WHERE source_id=$1)
          ON CONFLICT(source_id) DO NOTHING RETURNING source_id`,
         [sourceId, reply.trim(), epoch, receiptJson],
       );
@@ -796,6 +802,22 @@ export async function pilotStore(db, config, { discoverySince } = {}) {
   };
 }
 
+async function holdPendingReply(db, sourceId) {
+  const held = await db.query(
+    `WITH held_source AS (
+       SELECT source_id FROM pilot_source_holds WHERE source_id=$1
+     ), held_reply AS (
+       UPDATE pilot_outbox o
+       SET status='held',error=coalesce(o.error,'Source is held; do not send automatically')
+       WHERE o.source_id=$1 AND o.status IN ('ready','sending')
+         AND EXISTS(SELECT 1 FROM held_source)
+       RETURNING o.source_id
+     ) SELECT source_id FROM held_source`,
+    [sourceId],
+  );
+  return Boolean(held.rowCount);
+}
+
 export async function deliver(store, discord, botId, channelId, record) {
   const pending = (
     await store.db.query(
@@ -804,6 +826,8 @@ export async function deliver(store, discord, botId, channelId, record) {
   ).rows;
   const scope = validateScope((await store.meta()).scope);
   for (const row of pending) {
+    // A later hold stops pending replies without rewriting terminal receipts or hold reasons.
+    if (await holdPendingReply(store.db, row.source_id)) continue;
     const source = (
       await store.db.query("SELECT * FROM pilot_sources WHERE id=$1", [row.source_id])
     ).rows[0];
@@ -829,8 +853,11 @@ export async function deliver(store, discord, botId, channelId, record) {
       const matches = messages.filter(
         (m) => m.author.id === botId && m.message_reference?.message_id === row.source_id,
       );
-      await store.db.query(
-        "UPDATE pilot_outbox SET status=$2,discord_id=$3,error=$4 WHERE source_id=$1",
+      const recovered = await store.db.query(
+        `UPDATE pilot_outbox o SET status=$2,discord_id=$3,error=$4
+         WHERE o.source_id=$1 AND o.status='sending'
+           AND NOT EXISTS(SELECT 1 FROM pilot_source_holds h WHERE h.source_id=o.source_id)
+         RETURNING o.source_id`,
         [
           row.source_id,
           matches.length === 1 ? "sent" : "held",
@@ -840,6 +867,10 @@ export async function deliver(store, discord, botId, channelId, record) {
             : "Interrupted send could not be uniquely reconciled; do not resend automatically",
         ],
       );
+      if (!recovered.rowCount) {
+        await holdPendingReply(store.db, row.source_id);
+        continue;
+      }
       await record({
         type: "delivery_recovery",
         sourceId: row.source_id,
@@ -855,10 +886,18 @@ export async function deliver(store, discord, botId, channelId, record) {
       );
       continue;
     }
-    await store.db.query(
-      "UPDATE pilot_outbox SET status='sending',attempted_at=now() WHERE source_id=$1",
+    // The guarded claim is the send boundary; an HTTP write already in flight cannot be recalled.
+    const claimed = await store.db.query(
+      `UPDATE pilot_outbox o SET status='sending',attempted_at=now()
+       WHERE o.source_id=$1 AND o.status='ready'
+         AND NOT EXISTS(SELECT 1 FROM pilot_source_holds h WHERE h.source_id=o.source_id)
+       RETURNING o.source_id`,
       [row.source_id],
     );
+    if (!claimed.rowCount) {
+      await holdPendingReply(store.db, row.source_id);
+      continue;
+    }
     const sent = await discord.send(targetChannel, {
       content: row.content,
       nonce: row.source_id,
