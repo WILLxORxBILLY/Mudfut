@@ -302,6 +302,35 @@ test("default checkout is script-relative even when launched from another reposi
   assert.equal(JSON.parse(invalid.stdout).status, "rejected");
 });
 
+test("CLI honors a cached project package-manager pin without enabling network access", (t) => {
+  const root = fixture(t);
+  const bin = mkdtempSync(join(tmpdir(), "mudfut-offline-pnpm-"));
+  t.after(() => rmSync(bin, { recursive: true, force: true }));
+  // Model a Corepack shim with only the exact project pin cached. Ignoring the
+  // project would need an uncached default, which must not trigger a download.
+  writeFileSync(
+    join(bin, "pnpm"),
+    '#!/bin/sh\n[ "$COREPACK_ENABLE_PROJECT_SPEC" = "1" ] || exit 9\n[ "$COREPACK_ENABLE_NETWORK" = "0" ] || exit 10\n[ "$COREPACK_ENABLE_AUTO_PIN" = "0" ] || exit 11\n[ "$COREPACK_DEFAULT_TO_LATEST" = "0" ] || exit 12\nprintf "11.28.7\\n"\n',
+    { mode: 0o755 },
+  );
+  const result = spawnSync(
+    process.execPath,
+    [join(SCRIPT_CHECKOUT, "experiments/letta/release-preflight.mjs"), root],
+    {
+      cwd: SCRIPT_CHECKOUT,
+      env: { ...gitEnv, PATH: `${bin}:${process.env.PATH}` },
+      encoding: "utf8",
+      timeout: 20_000,
+    },
+  );
+  assert.equal(result.error, undefined);
+  assert.equal(result.status, 0, result.stdout);
+  const report = JSON.parse(result.stdout);
+  assert.equal(report.status, "source-identified");
+  assert.equal(report.versions.pnpm.observed, "11.28.7");
+  assert.equal(git(root, "status", "--porcelain"), "");
+});
+
 test("preflight imports only Node builtins, not production/runtime/network modules", () => {
   const source = readFileSync(new URL("./release-preflight.mjs", import.meta.url), "utf8");
   const imports = [...source.matchAll(/from ['"]([^'"]+)['"]/g)].map((match) => match[1]);

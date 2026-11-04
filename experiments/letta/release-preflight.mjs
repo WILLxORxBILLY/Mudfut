@@ -18,7 +18,9 @@ function execute(command, args, cwd) {
       ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("GIT_"))),
       GIT_OPTIONAL_LOCKS: "0",
       COREPACK_ENABLE_NETWORK: "0",
-      COREPACK_ENABLE_PROJECT_SPEC: "0",
+      // Honor the already-installed project pin; selecting Corepack's global
+      // default can require an uncached version even when this pin is cached.
+      COREPACK_ENABLE_PROJECT_SPEC: "1",
       COREPACK_ENABLE_AUTO_PIN: "0",
       COREPACK_DEFAULT_TO_LATEST: "0",
       npm_config_manage_package_manager_versions: "false",
