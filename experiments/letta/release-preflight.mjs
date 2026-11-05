@@ -134,6 +134,20 @@ export function sourceIdentity({
     fail("git-status-unavailable-or-malformed");
   }
   try {
+    // Status can hide changed files marked assume-unchanged or skip-worktree.
+    // Reject concealed/sparse index entries instead of changing their flags.
+    const entries = git("ls-files", "-v", "-z").split("\0");
+    if (entries.pop() !== "" || entries.length === 0) throw new Error("invalid index flags");
+    let concealed = false;
+    for (const entry of entries) {
+      if (!/^[A-Za-z?] .+$/s.test(entry)) throw new Error("invalid index flags");
+      if (!entry.startsWith("H ")) concealed = true;
+    }
+    if (concealed) fail("git-index-flags-not-allowed");
+  } catch {
+    fail("git-index-flags-unavailable-or-malformed");
+  }
+  try {
     git("ls-files", "--error-unmatch", "--", "package.json", "pnpm-lock.yaml");
     for (const file of ["package.json", "pnpm-lock.yaml"]) {
       if (!lstatSync(resolve(root, file)).isFile()) {
