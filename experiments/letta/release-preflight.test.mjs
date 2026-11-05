@@ -40,7 +40,7 @@ function git(root, ...args) {
   });
 }
 
-function fixture(t, { commit = true } = {}) {
+function fixture(t, { commit = true, files = {} } = {}) {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "mudfut-source-identity-")));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   git(root, "init", "--quiet");
@@ -53,8 +53,9 @@ function fixture(t, { commit = true } = {}) {
   );
   writeFileSync(join(root, "package.json"), JSON.stringify(manifest));
   writeFileSync(join(root, "pnpm-lock.yaml"), lockfile);
+  for (const [name, content] of Object.entries(files)) writeFileSync(join(root, name), content);
   if (commit) {
-    git(root, "add", "--", "package.json", "pnpm-lock.yaml");
+    git(root, "add", "--", "package.json", "pnpm-lock.yaml", ...Object.keys(files));
     // All writes and commits are confined to this disposable fictional repo.
     git(
       root,
@@ -77,6 +78,7 @@ const allowedGit = new Set([
   "rev-parse --verify HEAD^{tree}",
   "config --local --get remote.origin.url",
   "status --porcelain=v1 -z --untracked-files=normal --ignore-submodules=none",
+  "ls-files -v -z",
   "ls-files --error-unmatch -- package.json pnpm-lock.yaml",
 ]);
 
@@ -134,7 +136,7 @@ test("clean fictional source reports complete local identity, not CI or deployme
     installedRuntime: "unverified",
     deployment: "unverified",
   });
-  assert.equal(calls.length, 7);
+  assert.equal(calls.length, 8);
   assert.equal(git(root, "status", "--porcelain"), "", "inspection did not modify source");
 });
 
@@ -157,6 +159,54 @@ test("untracked-only source is dirty", (t) => {
   const { report } = inspect(root);
   rejected(report, "dirty-source");
   assert.deepEqual(report.source.dirty, { tracked: false, untracked: true });
+});
+
+for (const flag of ["--assume-unchanged", "--skip-worktree"]) {
+  test(`source identity rejects ${flag} hiding a tracked modification`, (t) => {
+    const root = fixture(t);
+    git(root, "update-index", flag, "--", "pnpm-lock.yaml");
+    writeFileSync(join(root, "pnpm-lock.yaml"), `${lockfile}# fictional hidden change\n`);
+    assert.equal(git(root, "status", "--porcelain"), "", "Git hides the modified fixture");
+    rejected(inspect(root).report, "git-index-flags-not-allowed");
+  });
+
+  test(`source identity rejects ${flag} even before a file changes`, (t) => {
+    const root = fixture(t);
+    git(root, "update-index", flag, "--", "pnpm-lock.yaml");
+    rejected(inspect(root).report, "git-index-flags-not-allowed");
+    assert.ok(
+      git(root, "ls-files", "-v").includes(flag === "--skip-worktree" ? "S " : "h "),
+      "inspection must not clear the fixture's index flags",
+    );
+  });
+
+  test(`source identity checks ${flag} on runtime files, including unusual filenames`, (t) => {
+    const name = "fictional runtime\nmodule.mjs";
+    const root = fixture(t, { files: { [name]: "export const fictional = 1;\n" } });
+    assert.equal(inspect(root).report.status, "source-identified");
+    git(root, "update-index", flag, "--", name);
+    writeFileSync(join(root, name), "export const fictional = 2;\n");
+    assert.equal(git(root, "status", "--porcelain"), "");
+    const { report } = inspect(root);
+    rejected(report, "git-index-flags-not-allowed");
+    assert.ok(!JSON.stringify(report).includes("fictional runtime"));
+  });
+}
+
+test("unavailable or malformed index flags fail closed without leaking paths or errors", (t) => {
+  const root = fixture(t);
+  rejected(
+    inspect(root, { gitError: "ls-files -v -z" }).report,
+    "git-index-flags-unavailable-or-malformed",
+  );
+  for (const value of ["", "H fictional-secret-path", "\0", "H \0", "broken\0"]) {
+    const { report } = inspect(root, { git: { "ls-files -v -z": value } });
+    rejected(report, "git-index-flags-unavailable-or-malformed");
+    assert.ok(!JSON.stringify(report).includes("fictional-secret-path"));
+  }
+  const { report } = inspect(root, { git: { "ls-files -v -z": "X fictional-secret-path\0" } });
+  rejected(report, "git-index-flags-not-allowed");
+  assert.ok(!JSON.stringify(report).includes("fictional-secret-path"));
 });
 
 test("untracked directories reject source without enumerating every contained file", (t) => {

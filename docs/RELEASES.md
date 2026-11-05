@@ -53,7 +53,12 @@ The report includes:
 
 Missing or malformed Git identity, absent/wrong origin, dirty source, unavailable
 or malformed metadata/versions, and version mismatches fail closed with stable
-error codes. Unsupported requirement syntax also fails closed rather than
+error codes. Index entries marked `assume-unchanged` or `skip-worktree` (including
+sparse checkouts) are rejected even when `git status` appears clean: these flags
+can conceal modified tracked files. Unavailable or malformed index flags also
+reject the check. Inspection never clears those flags; investigate and preserve
+hidden work rather than changing it merely to obtain a passing report.
+Unsupported requirement syntax also fails closed rather than
 silently approximating semver. Rejected reports may have null fields; never treat
 a partial report as success. `ci`, `installedRuntime`, and `deployment` remain
 `unverified` even on success. An uncommitted development checkout is expected to
