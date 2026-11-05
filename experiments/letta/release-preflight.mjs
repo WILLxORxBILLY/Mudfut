@@ -4,7 +4,8 @@ import { lstatSync, readFileSync, realpathSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-export const SCRIPT_CHECKOUT = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
+const SCRIPT_FILE = realpathSync(fileURLToPath(import.meta.url));
+export const SCRIPT_CHECKOUT = resolve(dirname(SCRIPT_FILE), "../..");
 const REPOSITORY = "WILLxORxBILLY/Mudfut";
 
 // No shell, fetch, package install, runtime imports, or environment-file loading.
@@ -209,6 +210,18 @@ export function main(args = process.argv.slice(2)) {
   return report.status === "source-identified" ? 0 : 1;
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+function isCliEntrypoint(entry) {
+  if (!entry) return false;
+  try {
+    // Node normally canonicalizes import.meta.url, but not argv[1]. With
+    // --preserve-symlinks-main, both still need the same physical identity.
+    return realpathSync(entry) === SCRIPT_FILE;
+  } catch {
+    // Eval/stdin imports can have a non-file argv[1]. Never execute their CLI.
+    return resolve(entry) === SCRIPT_FILE;
+  }
+}
+
+if (isCliEntrypoint(process.argv[1])) {
   process.exitCode = main();
 }
