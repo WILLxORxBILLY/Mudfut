@@ -6,6 +6,7 @@ import { randomUUID } from "node:crypto";
 import pg from "pg";
 import { assertPrivateState, saveJson, state } from "./runtime.mjs";
 import { snowflake, validateScope, replyChannels } from "./pilot-store.mjs";
+import { assertRecovery } from "./pilot-recovery.mjs";
 
 async function privateJson(path) {
   const stat = await lstat(path);
@@ -92,6 +93,7 @@ export async function runRouteCommand(command, target) {
       ownsWorkerLock = (await db.query("SELECT pg_try_advisory_lock(1560387,1127029) AS acquired"))
         .rows[0].acquired;
       if (!ownsWorkerLock) throw new Error("Stop the active pilot worker before switching routes");
+      await assertRecovery(db, "migrate");
     }
     const [meta, outbox, work] = await Promise.all([
       db.query("SELECT scope,cursor,epoch FROM pilot_meta"),

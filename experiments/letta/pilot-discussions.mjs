@@ -1,4 +1,5 @@
 import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
+import { assertStoreRecovery } from "./pilot-recovery.mjs";
 import {
   archiveDictionary,
   archiveInput,
@@ -104,7 +105,7 @@ export function archiveDiscussions(
     if (row.threadId) return { gap: "thread-excluded" };
     return { row, source: (await fresh([row]))[0] };
   }
-  return {
+  const api = {
     async findChronologicalGap(intervals, knownIds) {
       await checkpoint();
       // Each interval is bounded by inspected originals; a capped index count
@@ -431,4 +432,15 @@ export function archiveDiscussions(
       };
     },
   };
+  return new Proxy(api, {
+    get(target, key) {
+      const fn = target[key];
+      return typeof fn !== "function"
+        ? fn
+        : async (...args) => {
+            await assertStoreRecovery(store, "history");
+            return fn(...args);
+          };
+    },
+  });
 }

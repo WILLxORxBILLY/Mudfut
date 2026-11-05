@@ -6,6 +6,13 @@ import { setTimeout as delay } from "node:timers/promises";
 import { state, assertPrivateState, safeError, saveJson } from "./runtime.mjs";
 import { pilotStore, validateScope, deliver } from "./pilot-store.mjs";
 import {
+  ownedExternal,
+  readRecoveryPolicy,
+  recoveryTransport,
+  recoveryArchive,
+  assertRecovery,
+} from "./pilot-recovery.mjs";
+import {
   discordTransport,
   refreshSources,
   syncKnowledgeSource,
@@ -127,7 +134,11 @@ try {
       ),
     );
   } else {
-    const discord = discordTransport((await privateFile("discord-token")).trim(), record);
+    // Ownership and the persisted policy are checked before even identity/auth
+    // callbacks, not just before constructing a schema-writing store.
+    const discord = await ownedExternal(db, "startup", async () =>
+      recoveryTransport(db, discordTransport((await privateFile("discord-token")).trim(), record)),
+    );
     const bot = await discord.me();
     const store = await pilotStore(db, config, {
       discoverySince: discoveryBoundary(discord.serverTime()),
@@ -174,8 +185,13 @@ try {
     });
     let liveConfig = config,
       lastPollCursors = {};
-    knowledge = await communityKnowledge(db);
+    const recoveryPolicy = await readRecoveryPolicy(db);
+    knowledge = recoveryPolicy ? undefined : await communityKnowledge(db);
     try {
+      if (recoveryPolicy)
+        throw Object.assign(new Error("Recovery skips historical manifest initialization"), {
+          code: "ENOENT",
+        });
       knowledgeManifest = validateArchiveManifest(
         JSON.parse(await privateFile("community-knowledge-manifest.json")),
       );
@@ -203,23 +219,26 @@ try {
     } catch (error) {
       if (error.code !== "ENOENT") throw error;
     }
-    if (historyCredentials) {
+    if (historyCredentials && !recoveryPolicy) {
       const credentials = historyCredentials;
       if (credentials.host !== "127.0.0.1" || credentials.user !== "mudfut_history_reader")
         throw new Error("History requires the separate local read-only role");
-      history = archiveReader(
-        new pg.Client({
-          ...credentials,
-          options: "-c default_transaction_read_only=on",
-          statement_timeout: 10000,
-          connectionTimeoutMillis: 10000,
-        }),
-        {
-          report: async (status) => {
-            await saveJson(join(state, "archive-status.json"), status);
-            if (status.state === "paused") await record({ type: "archive_paused", ...status });
+      history = recoveryArchive(
+        db,
+        archiveReader(
+          new pg.Client({
+            ...credentials,
+            options: "-c default_transaction_read_only=on",
+            statement_timeout: 10000,
+            connectionTimeoutMillis: 10000,
+          }),
+          {
+            report: async (status) => {
+              await saveJson(join(state, "archive-status.json"), status);
+              if (status.state === "paused") await record({ type: "archive_paused", ...status });
+            },
           },
-        },
+        ),
       );
       await optionalArchive(() => history.connect());
     }
@@ -228,22 +247,24 @@ try {
     let readKnowledgeView = async () => {
       throw new Error("Community knowledge views are not ready");
     };
-    model = await pilotModel(archiveTool(store, discord, { ...config, botId: bot.id }, history), {
-      memoryOnly: mode === "recall-proof",
-      botId: bot.id,
-      discussions: history
-        ? archiveDiscussions(store, discord, { ...config, botId: bot.id }, history, {
-            checkpoint: async () => activeCheckpoint?.(),
-          })
-        : undefined,
-      sourceLookup: store.findSources,
-      validateSources: (ids) =>
-        refreshSources(store, discord, record, ids, activeCheckpoint, knowledge),
-      knowledgeViews: (query) => readKnowledgeView(query),
-      memoryFactory: (legacy, { agentId }) =>
-        postgresUnderstanding(memoryDb, legacy, { agentId, record }),
-    });
-    const correctionRequestIds = (await store.sources())
+    model = await ownedExternal(db, "model", () =>
+      pilotModel(archiveTool(store, discord, { ...config, botId: bot.id }, history), {
+        memoryOnly: mode === "recall-proof",
+        botId: bot.id,
+        discussions: history
+          ? archiveDiscussions(store, discord, { ...config, botId: bot.id }, history, {
+              checkpoint: async () => activeCheckpoint?.(),
+            })
+          : undefined,
+        sourceLookup: store.findSources,
+        validateSources: (ids) =>
+          refreshSources(store, discord, record, ids, activeCheckpoint, knowledge),
+        knowledgeViews: (query) => readKnowledgeView(query),
+        memoryFactory: (legacy, { agentId }) =>
+          postgresUnderstanding(memoryDb, legacy, { agentId, record, ownerDb: db }),
+      }),
+    );
+    const correctionRequestIds = (recoveryPolicy ? [] : await store.sources())
       .filter((row) => isCorrectionRequest(row.source))
       .map((row) => row.id);
     const excludedCorrectionEvidence = correctionRequestIds.length
@@ -257,7 +278,9 @@ try {
         sourceIds: excludedCorrectionEvidence,
       });
     }
-    const requests = await operatorRequests(store, state, record);
+    const requests = recoveryPolicy
+      ? { next: async () => null, reconcile: async () => 0, fail: async () => false }
+      : await operatorRequests(store, state, record);
     const bufferedIncoming = new Map();
     const pollFresh = async () => {
       let discovered;
@@ -294,6 +317,7 @@ try {
       for (const message of messages) {
         if (message.author.bot || ![0, 19].includes(message.type)) continue;
         const source = liveSource(message, liveConfig);
+        await store.recovery("live", source);
         if (await store.isAddressed(source, bot.id, discord.get)) {
           if (eligibleAcknowledgment(message, source, lastPollCursors, true))
             offerAcknowledgment(source);
@@ -309,13 +333,15 @@ try {
         return false;
       },
     });
-    readKnowledgeView = (query) =>
-      retrieveCurrentKnowledgeView(
+    readKnowledgeView = async (query) => {
+      await store.recovery("history");
+      return retrieveCurrentKnowledgeView(
         knowledge,
         (ids) => refreshSources(store, discord, record, ids, activeCheckpoint, knowledge),
         store.findSources,
         query,
       );
+    };
     const historyBindingFor = async (batch) => {
       if (!knowledgeManifest || !historyCredentials || !batch?.historyEpisode) return null;
       const episode = knowledgeManifest.episodes.find(
@@ -347,6 +373,7 @@ try {
       });
     };
     const recoverHistoryDerivation = async () => {
+      if (await readRecoveryPolicy(db)) return { disposition: "recovery-disabled" };
       if (!history || !historyCredentials) return { disposition: "idle" };
       const shouldYield = async () => {
         await checkpoint();
@@ -450,6 +477,7 @@ try {
         for (const message of incoming) {
           if (!message.author.bot && [0, 19].includes(message.type)) {
             const source = liveSource(message, liveConfig);
+            await store.recovery("live", source);
             // Initial catch-up is quiet; later mentions/replies use durable outbox uniqueness.
             const knowledgeCommand = source.content.trimStart().startsWith("!knowledge");
             const addressed =
@@ -524,7 +552,12 @@ try {
         batch = await store.next();
         if (!batch?.replyTo) batch = (await requests.next()) ?? batch;
         timing.event.operatorRequestId = batch?.operatorRequest?.id ?? null;
-        if (!batch && mode !== "recall-proof" && !history?.paused) {
+        if (
+          !batch &&
+          mode !== "recall-proof" &&
+          !history?.paused &&
+          !(await readRecoveryPolicy(db))
+        ) {
           phase = "history_load";
           batch = await timing.measure("history_load", () => learning.next());
           batch = await timing.measure("correction_review_context", () =>
@@ -551,7 +584,14 @@ try {
             const generate = async (check) => {
               activeCheckpoint = check;
               try {
-                const result = await timing.measure("model_turn", () => model.turn(batch, epoch));
+                const result = await timing.measure("model_turn", () =>
+                  ownedExternal(db, "model", async () => {
+                    for (const row of batch.rows) await assertRecovery(db, "live", row.source);
+                    if (batch.historyEpisode || batch.operatorRequest)
+                      await assertRecovery(db, "history");
+                    return model.turn(batch, epoch);
+                  }),
+                );
                 phase = batch.historyEpisode
                   ? "history_validation"
                   : batch.operatorRequest

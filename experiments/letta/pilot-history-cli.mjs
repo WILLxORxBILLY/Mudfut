@@ -5,6 +5,7 @@ import { join, resolve } from "node:path";
 import { state, assertPrivateState } from "./runtime.mjs";
 import { snowflake, validateScope } from "./pilot-store.mjs";
 import { validateHistoryPass, stageHistoryRequest } from "./pilot-history.mjs";
+import { assertRecovery } from "./pilot-recovery.mjs";
 
 process.umask(0o077);
 assertPrivateState(state);
@@ -25,8 +26,24 @@ const db = new pg.Client({
   statement_timeout: 10000,
   connectionTimeoutMillis: 10000,
 });
-await db.connect();
+let pilot;
+if (mode === "stage") {
+  const pilotConnection = JSON.parse(await readFile(join(state, "postgres.json"), "utf8"));
+  if (pilotConnection.host !== "127.0.0.1" || pilotConnection.user !== "mudfut_pilot")
+    throw new Error("Use the dedicated loopback pilot role for history preflight");
+  pilot = new pg.Client({
+    ...pilotConnection,
+    statement_timeout: 10000,
+    connectionTimeoutMillis: 10000,
+  });
+  await pilot.connect();
+}
 try {
+  // Administrative archive selection is read-only, not a runtime writer. In
+  // ordinary mode it may stage work while the worker runs; any persisted recovery
+  // policy denies it before archive connection or immutable-file publication.
+  if (pilot) await assertRecovery(pilot, "history");
+  await db.connect();
   await db.query("BEGIN READ ONLY");
   if (mode === "status") {
     const exists = (await db.query("SELECT to_regclass('public.pilot_history_episodes') AS name"))
@@ -127,7 +144,7 @@ try {
       if (JSON.stringify(validateHistoryPass(saved.pass, config)) !== JSON.stringify(pass))
         throw new Error("Existing selection snapshot differs; preserve it before selecting again");
     }
-    await stageHistoryRequest(state, pass, config);
+    await stageHistoryRequest(state, pass, config, pilot);
     console.log(
       JSON.stringify(
         {
@@ -144,4 +161,5 @@ try {
   }
 } finally {
   await db.end();
+  await pilot?.end();
 }

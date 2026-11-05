@@ -9,7 +9,17 @@ try {
   assertPrivateState(state);
   if (process.argv[2] === "stage" && process.argv.length === 4) {
     const input = JSON.parse(await readFile(resolve(process.argv[3]), "utf8"));
-    console.log(JSON.stringify(await stageOperatorRequest(state, input), null, 2));
+    const db = new pg.Client({
+      ...JSON.parse(await readFile(join(state, "postgres.json"), "utf8")),
+      connectionTimeoutMillis: 10000,
+      statement_timeout: 10000,
+    });
+    try {
+      await db.connect();
+      console.log(JSON.stringify(await stageOperatorRequest(state, input, db), null, 2));
+    } finally {
+      await db.end();
+    }
   } else if (process.argv[2] === "status" && process.argv.length === 3) {
     const db = new pg.Client({
       ...JSON.parse(await readFile(join(state, "postgres.json"), "utf8")),

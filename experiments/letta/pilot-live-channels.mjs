@@ -1,5 +1,6 @@
 import { replyChannels, sourceRecord, snowflake } from "./pilot-store.mjs";
 import { DiscordReadUnavailable } from "./pilot-discord.mjs";
+import { assertStoreRecovery, recoverySourceAllowed } from "./pilot-recovery.mjs";
 
 export function liveSource(message, config) {
   if (!(config.liveChannelIds ?? replyChannels(config)).includes(message.channel_id))
@@ -14,7 +15,18 @@ export async function pollLiveChannels(
   channelIds = replyChannels(config),
   observe = async () => {},
 ) {
-  const { cursors } = await store.meta();
+  const policy = await assertStoreRecovery(store);
+  const { cursors: savedCursors } = await store.meta();
+  const cursors = { ...savedCursors };
+  // Validate the whole route batch before parallel reads can start. A new or
+  // missing route is not implicit permission to fetch a recent/history page.
+  if (policy)
+    for (const channel of channelIds) {
+      const bound = policy.frontiers[channel];
+      if (!bound) throw new Error("Recovery gate: route has no released frontier");
+      const saved = cursors[channel];
+      cursors[channel] = saved && BigInt(saved) > BigInt(bound) ? saved : bound;
+    }
   // ponytail: isolate permission and exhausted transient message reads only; startup,
   // discovery, evidence validation and delivery remain fail-closed. Upgrade to an
   // endpoint-aware scheduler before isolating those operations or adding backoff.
@@ -36,6 +48,11 @@ export async function pollLiveChannels(
       }
       if (messages.some((message) => message.channel_id !== channelId))
         throw new Error("Discord returned a message from a different channel");
+      if (
+        policy &&
+        messages.some((message) => !recoverySourceAllowed(policy, { id: message.id, channelId }))
+      )
+        throw new Error("Recovery gate: read returned a protected/pre-frontier message");
       return { messages, at: new Date().toISOString() };
     }),
   );

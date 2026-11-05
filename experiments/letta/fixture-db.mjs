@@ -115,11 +115,15 @@ try {
   if (mode === "fixtures")
     await run([
       "--test",
+      // ponytail: files share the installation advisory key; use per-file
+      // databases before parallelizing these single-writer fixtures.
+      "--test-concurrency=1",
       "check.test.mjs",
       "reply-reference.test.mjs",
       "coverage-inspector.test.mjs",
       "configuration.test.mjs",
       "pilot-check.test.mjs",
+      "recovery-gate.test.mjs",
       "security-check.test.mjs",
       "recovery-check.test.mjs",
       "reliability.test.mjs",

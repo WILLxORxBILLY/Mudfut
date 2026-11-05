@@ -4,6 +4,13 @@ import {
   generationAttempts,
 } from "./pilot-generation-failures.mjs";
 import { createHash, randomUUID } from "node:crypto";
+import {
+  claimPilotOwnership,
+  assertRecovery,
+  readRecoveryPolicy,
+  recoverySourceAllowed,
+  recoveryEligibilitySql,
+} from "./pilot-recovery.mjs";
 
 export const digest = (value) => createHash("sha256").update(value).digest("hex");
 const stableJson = (value) => {
@@ -118,9 +125,11 @@ export async function pilotStore(db, config, { discoverySince } = {}) {
   validateScope(config);
   if (discoverySince !== undefined && !snowflake(discoverySince))
     throw new Error("Invalid Discord enrollment boundary");
-  const lock = await db.query("SELECT pg_try_advisory_lock(1560387, 1127029) AS acquired");
-  if (!lock.rows[0].acquired) throw new Error("Another pilot worker owns this database");
-  await db.query(`
+  await claimPilotOwnership(db);
+  const startupPolicy = await assertRecovery(db, "startup");
+  let reclassified = [];
+  if (!startupPolicy) {
+    await db.query(`
     CREATE TABLE IF NOT EXISTS pilot_meta (
       id boolean PRIMARY KEY DEFAULT true CHECK(id), scope jsonb NOT NULL,
       cursor text, epoch integer NOT NULL DEFAULT 0, rebuild boolean NOT NULL DEFAULT false,
@@ -167,48 +176,62 @@ export async function pilotStore(db, config, { discoverySince } = {}) {
     CREATE INDEX IF NOT EXISTS pilot_sources_pending ON pilot_sources ((id::numeric)) WHERE NOT deleted AND NOT learned AND learnable;
     CREATE INDEX IF NOT EXISTS pilot_sources_revalidation ON pilot_sources (checked_at NULLS FIRST) WHERE NOT deleted;
   `);
-  // A correction hold must survive source cleanup long enough to remain auditable.
-  await db.query(
-    "ALTER TABLE pilot_source_holds DROP CONSTRAINT IF EXISTS pilot_source_holds_source_id_fkey",
-  );
-  const { historyFailureSchema } = await import("./pilot-history-failures.mjs");
-  await db.query(historyFailureSchema);
-  await db.query(generationFailureSchema);
-  await db.query("INSERT INTO pilot_meta(id,scope) VALUES(true,$1) ON CONFLICT DO NOTHING", [
-    config,
-  ]);
-  const saved = (await db.query("SELECT scope FROM pilot_meta")).rows[0].scope;
-  if (
-    saved.guildId !== config.guildId ||
-    saved.channelId !== config.channelId ||
-    (saved.replyScope === "guild" && config.replyScope !== "guild") ||
-    replyChannels(saved).some((id) => !replyChannels(config).includes(id))
-  )
-    throw new Error(
-      "Pilot live channel differs from persisted configuration; use a separate state/database",
+    // A correction hold must survive source cleanup long enough to remain auditable.
+    await db.query(
+      "ALTER TABLE pilot_source_holds DROP CONSTRAINT IF EXISTS pilot_source_holds_source_id_fkey",
     );
-  await db.query(
-    `UPDATE pilot_sources SET learnable=false,learned=true
+    const { historyFailureSchema } = await import("./pilot-history-failures.mjs");
+    await db.query(historyFailureSchema);
+    await db.query(generationFailureSchema);
+    await db.query("INSERT INTO pilot_meta(id,scope) VALUES(true,$1) ON CONFLICT DO NOTHING", [
+      config,
+    ]);
+    const saved = (await db.query("SELECT scope FROM pilot_meta")).rows[0].scope;
+    if (
+      saved.guildId !== config.guildId ||
+      saved.channelId !== config.channelId ||
+      (saved.replyScope === "guild" && config.replyScope !== "guild") ||
+      replyChannels(saved).some((id) => !replyChannels(config).includes(id))
+    )
+      throw new Error(
+        "Pilot live channel differs from persisted configuration; use a separate state/database",
+      );
+    await db.query(
+      `UPDATE pilot_sources SET learnable=false,learned=true
       WHERE (learnable OR NOT learned) AND (source->>'guildId'<>$1 OR NOT ${liveEndpointSql})`,
-    [config.guildId, replyChannels(config), config.replyScope === "guild"],
-  );
-  // Preserve the original cursor while migrating to independent channel progress.
-  await db.query(`UPDATE pilot_meta SET cursors=jsonb_set(cursors,ARRAY[scope->>'channelId'],to_jsonb(cursor))
+      [config.guildId, replyChannels(config), config.replyScope === "guild"],
+    );
+    // Preserve the original cursor while migrating to independent channel progress.
+    await db.query(`UPDATE pilot_meta SET cursors=jsonb_set(cursors,ARRAY[scope->>'channelId'],to_jsonb(cursor))
     WHERE cursor IS NOT NULL AND NOT (cursors ? (scope->>'channelId'))`);
-  // Scope and enrollment commit together: a failed first discovery/restart must
-  // retain this boundary, while configured-to-guild expansion starts a fresh one.
-  await db.query(
-    `UPDATE pilot_meta SET scope=$1,
+    // Scope and enrollment commit together: a failed first discovery/restart must
+    // retain this boundary, while configured-to-guild expansion starts a fresh one.
+    await db.query(
+      `UPDATE pilot_meta SET scope=$1,
     discovery_since=CASE WHEN scope->>'replyScope' IS DISTINCT FROM 'guild'
       AND $1::jsonb->>'replyScope'='guild' THEN $2::text
       ELSE coalesce(discovery_since,$2::text) END`,
-    [config, discoverySince ?? null],
-  );
-  const reclassified = (
-    await db.query(`UPDATE pilot_sources SET addressed=true,learned=false
+      [config, discoverySince ?? null],
+    );
+    reclassified = (
+      await db.query(`UPDATE pilot_sources SET addressed=true,learned=false
     WHERE NOT addressed AND NOT deleted AND source->>'replyTo' IN
     (SELECT discord_id FROM pilot_outbox WHERE status='sent') RETURNING id`)
-  ).rows.map((r) => r.id);
+    ).rows.map((r) => r.id);
+  } else {
+    // Recovery startup is not a migration/reclassification opportunity. A
+    // compatible existing schema and exact scope are prerequisites to release.
+    const saved = (await db.query("SELECT scope FROM pilot_meta")).rows[0]?.scope;
+    if (
+      !saved ||
+      saved.guildId !== config.guildId ||
+      saved.channelId !== config.channelId ||
+      (saved.replyScope ?? "configured") !== (config.replyScope ?? "configured") ||
+      JSON.stringify([...replyChannels(saved)].sort()) !==
+        JSON.stringify([...replyChannels(config)].sort())
+    )
+      throw new Error("Recovery gate: existing compatible scope required");
+  }
   const meta = async () => (await db.query("SELECT * FROM pilot_meta")).rows[0];
   const sources = async () =>
     (await db.query("SELECT * FROM pilot_sources ORDER BY id::numeric")).rows;
@@ -330,6 +353,7 @@ export async function pilotStore(db, config, { discoverySince } = {}) {
   }
   const optOut = async () => {}; // Deprecated compatibility hook; no state mutation.
   async function next() {
+    const recoveryPolicy = await assertRecovery(db);
     const direct = (
       await db.query(
         `SELECT s.*, ${generationAttempts} FROM pilot_sources s WHERE NOT deleted AND addressed AND learnable AND NOT evidence_excluded
@@ -337,8 +361,9 @@ export async function pilotStore(db, config, { discoverySince } = {}) {
         AND source->>'guildId'=$1 AND ${liveEndpointSql}
         AND NOT EXISTS(SELECT 1 FROM pilot_source_holds h WHERE h.source_id=s.id)
         AND NOT EXISTS(SELECT 1 FROM pilot_outbox o WHERE o.source_id=s.id)
+        AND ${recoveryEligibilitySql("$4")}
         ORDER BY id::numeric LIMIT 1`,
-        [config.guildId, replyChannels(config), config.replyScope === "guild"],
+        [config.guildId, replyChannels(config), config.replyScope === "guild", recoveryPolicy],
       )
     ).rows[0];
     if (direct) return { rows: [direct], replyTo: direct.id };
@@ -347,11 +372,13 @@ export async function pilotStore(db, config, { discoverySince } = {}) {
         `SELECT s.*, ${generationAttempts} FROM pilot_sources s WHERE NOT deleted AND NOT learned AND learnable AND NOT evidence_excluded
          AND ${generationReady}
          AND NOT EXISTS(SELECT 1 FROM pilot_source_holds h WHERE h.source_id=s.id)
+         AND ${recoveryEligibilitySql("$1")}
          ORDER BY id::numeric LIMIT 12`,
+        [recoveryPolicy],
       )
     ).rows;
     if (!rows.length) {
-      await db.query("UPDATE pilot_meta SET relearning=false");
+      if (!recoveryPolicy) await db.query("UPDATE pilot_meta SET relearning=false");
       return null;
     }
     const batch = [];
@@ -484,6 +511,21 @@ export async function pilotStore(db, config, { discoverySince } = {}) {
     for (const work of (
       await db.query("SELECT * FROM pilot_work WHERE status='prepared' ORDER BY created_at")
     ).rows) {
+      const recoveryPolicy = await assertRecovery(db);
+      if (recoveryPolicy) {
+        if (work.history_episode || !work.source_ids.length || work.candidate?.operatorRequestId)
+          continue;
+        const selected = (
+          await db.query("SELECT source FROM pilot_sources WHERE id=ANY($1::text[])", [
+            work.source_ids.concat(work.validation_ids),
+          ])
+        ).rows;
+        if (
+          selected.length !== new Set([...work.source_ids, ...work.validation_ids]).size ||
+          selected.some((row) => !recoverySourceAllowed(recoveryPolicy, row.source))
+        )
+          continue;
+      }
       try {
         if (work.epoch !== (await meta()).epoch) throw new Error("Prepared memory epoch mismatch");
         if (typeof work.candidate.content !== "string")
@@ -573,8 +615,9 @@ export async function pilotStore(db, config, { discoverySince } = {}) {
     }
     return result;
   }
-  return {
+  const api = {
     db,
+    recovery: (kind, source) => assertRecovery(db, kind, source),
     transaction,
     meta,
     sources,
@@ -784,6 +827,7 @@ export async function pilotStore(db, config, { discoverySince } = {}) {
     },
     async reset(memory) {
       if (!(await meta()).rebuild) return;
+      await assertRecovery(db, "reset");
       if (memory.invalidate) {
         const affected = await memory.affected((await meta()).invalid_sources);
         await db.query(
@@ -800,6 +844,99 @@ export async function pilotStore(db, config, { discoverySince } = {}) {
       return true;
     },
   };
+  const reads = new Set([
+    "meta",
+    "sources",
+    "eligible",
+    "optedOut",
+    "isHeld",
+    "replyChannelAllowed",
+    "recovery",
+  ]);
+  return new Proxy(api, {
+    get(target, key) {
+      const fn = target[key];
+      if (typeof fn !== "function" || reads.has(key))
+        return typeof fn === "function" ? fn.bind(target) : fn;
+      return async (...args) => {
+        const policy = await assertRecovery(
+          db,
+          [
+            "remove",
+            "migrateMemory",
+            "holdSource",
+            "excludeCorrectionRequestEvidence",
+            "transaction",
+          ].includes(key)
+            ? ({ remove: "remove", migrateMemory: "migrate" }[key] ?? "edit")
+            : "live",
+        );
+        if (policy) {
+          if (["registerChannels", "registerThreads"].includes(key)) {
+            for (const item of args[0])
+              if (!policy.frontiers[item.id])
+                throw new Error("Recovery gate: unapproved route enrollment");
+            return;
+          }
+          if (["ingest", "isAddressed"].includes(key)) await assertRecovery(db, "live", args[0]);
+          if (key === "isAddressed" && args[2]) {
+            const read = args[2];
+            args[2] = async (channelId, id) => {
+              await assertRecovery(db, "live", { id, channelId });
+              return read(channelId, id);
+            };
+          }
+          if (key === "ingest") {
+            const previous = (
+              await db.query("SELECT hash FROM pilot_sources WHERE id=$1", [args[0].id])
+            ).rows[0];
+            if (previous && previous.hash !== digest(JSON.stringify(args[0])))
+              await assertRecovery(db, "edit");
+          }
+          if (["queueReply", "checked", "context"].includes(key)) {
+            const source = (
+              await db.query("SELECT source FROM pilot_sources WHERE id=$1", [args[0]])
+            ).rows[0]?.source;
+            await assertRecovery(db, "live", source ?? {});
+          }
+          if (key === "prepare") {
+            const batch = args[1];
+            if (
+              batch.historyEpisode ||
+              batch.operatorRequest ||
+              args[2]?.operatorRequestId ||
+              !batch.rows.length
+            )
+              await assertRecovery(db, "history");
+            const ids = [...batch.rows.map((row) => row.id), ...(args[4] ?? [])];
+            const sources = (
+              await db.query("SELECT source FROM pilot_sources WHERE id=ANY($1::text[])", [ids])
+            ).rows;
+            if (sources.length !== new Set(ids).size)
+              throw new Error("Recovery gate: unavailable source");
+            for (const row of sources) await assertRecovery(db, "live", row.source);
+          }
+          if (key === "cursor")
+            await assertRecovery(db, "live", {
+              id: args[0],
+              channelId: args[1] ?? config.channelId,
+            });
+        }
+        const result = await fn.apply(api, args);
+        if (policy && ["validationSources", "findSources"].includes(key))
+          return result.filter((row) => recoverySourceAllowed(policy, row.source ?? row));
+        if (policy && key === "context")
+          return {
+            ...result,
+            priorMessages: result.priorMessages.filter((source) =>
+              recoverySourceAllowed(policy, source),
+            ),
+            priorBotReplies: [],
+          };
+        return result;
+      };
+    },
+  });
 }
 
 async function holdPendingReply(db, sourceId) {
@@ -819,6 +956,7 @@ async function holdPendingReply(db, sourceId) {
 }
 
 export async function deliver(store, discord, botId, channelId, record) {
+  await store.recovery?.("live");
   const pending = (
     await store.db.query(
       "SELECT * FROM pilot_outbox WHERE status IN ('ready','sending') ORDER BY source_id::numeric",
@@ -826,6 +964,12 @@ export async function deliver(store, discord, botId, channelId, record) {
   ).rows;
   const scope = validateScope((await store.meta()).scope);
   for (const row of pending) {
+    const recoverySource = (
+      await store.db.query("SELECT source FROM pilot_sources WHERE id=$1", [row.source_id])
+    ).rows[0]?.source;
+    const recoveryPolicy = await readRecoveryPolicy(store.db);
+    if (recoveryPolicy && !recoverySourceAllowed(recoveryPolicy, recoverySource)) continue;
+    await store.recovery?.("live", recoverySource);
     // A later hold stops pending replies without rewriting terminal receipts or hold reasons.
     if (await holdPendingReply(store.db, row.source_id)) continue;
     const source = (
