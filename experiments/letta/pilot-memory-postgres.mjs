@@ -1,5 +1,6 @@
 import { digest } from "./pilot-store.mjs";
 import { decodeUnderstanding, encodeUnderstanding } from "./pilot-memory.mjs";
+import { readRecoveryPolicy, assertRecovery, recoverySourceAllowed } from "./pilot-recovery.mjs";
 
 function entriesFrom(content) {
   if (typeof content !== "string") throw new Error("Expected version 2 understanding text");
@@ -78,9 +79,14 @@ const schema = `
   END $$;
 `;
 
-export async function postgresUnderstanding(db, legacy, { agentId, record = async () => {} } = {}) {
+export async function postgresUnderstanding(
+  db,
+  legacy,
+  { agentId, record = async () => {}, ownerDb = db } = {},
+) {
   if (typeof agentId !== "string" || !agentId.trim() || agentId.length > 200)
     throw new Error("PostgreSQL memory requires the existing agent identity");
+  const recoveryPolicy = await assertRecovery(ownerDb, "model");
   const state = async (lock = false) => {
     const row = (
       await db.query(`SELECT * FROM pilot_memory_meta WHERE id${lock ? " FOR UPDATE" : ""}`)
@@ -109,63 +115,11 @@ export async function postgresUnderstanding(db, legacy, { agentId, record = asyn
     );
   };
   let migrationReceipt;
-  await db.query("BEGIN");
-  try {
-    // The migration lock is independent of the running pilot's source/work lock.
-    await db.query("SELECT pg_advisory_xact_lock(1560387,1127030)");
-    await db.query(schema);
-    let current = (await db.query("SELECT * FROM pilot_memory_meta WHERE id FOR UPDATE")).rows[0];
-    if (!current) {
-      const imported = await legacy.read();
-      const entries = entriesFrom(imported.content);
-      if (digest(imported.content) !== imported.revision)
-        throw new Error("Legacy memory checksum mismatch");
-      const commit = (
-        await db.query(
-          `INSERT INTO pilot_memory_commits(revision,agent_id,audit)
-        VALUES($1,$2,$3) RETURNING id`,
-          [
-            imported.revision,
-            agentId,
-            JSON.stringify({ kind: "lossless_legacy_migration", entryCount: entries.length }),
-          ],
-        )
-      ).rows[0];
-      for (const entry of entries)
-        await insertVersion(entry.key, entry, null, commit.id, sourceIds(entry));
-      await db.query(
-        "INSERT INTO pilot_memory_meta(id,agent_id,content,revision,commit_id) VALUES(true,$1,$2,$3,$4)",
-        [agentId, imported.content, imported.revision, commit.id],
-      );
-      await db.query(
-        `INSERT INTO pilot_memory_migrations(id,agent_id,content,revision,entry_count,commit_id)
-        VALUES(true,$1,$2,$3,$4,$5)`,
-        [agentId, imported.content, imported.revision, entries.length, commit.id],
-      );
-      current = await state();
-      const saved = (await db.query("SELECT count(*)::integer AS count FROM pilot_memory_entries"))
-        .rows[0];
-      if (
-        current.content !== imported.content ||
-        current.revision !== imported.revision ||
-        saved.count !== entries.length
-      )
-        throw new Error("Lossless PostgreSQL memory migration verification failed");
-      await record({
-        type: "memory_migrated",
-        agentId,
-        revision: imported.revision,
-        entries: entries.length,
-        commitId: commit.id,
-      });
-    } else await state();
-    const receipt = (
-      await db.query(
-        "SELECT agent_id,revision,entry_count,commit_id,created_at FROM pilot_memory_migrations WHERE id",
-      )
-    ).rows[0];
+  if (recoveryPolicy) {
+    await state();
+    const receipt = (await db.query("SELECT * FROM pilot_memory_migrations WHERE id")).rows[0];
     if (!receipt || receipt.agent_id !== agentId)
-      throw new Error("Missing PostgreSQL memory migration receipt");
+      throw new Error("Recovery gate: compatible existing memory migration required");
     migrationReceipt = {
       agentId: receipt.agent_id,
       revision: receipt.revision,
@@ -173,10 +127,77 @@ export async function postgresUnderstanding(db, legacy, { agentId, record = asyn
       commitId: receipt.commit_id,
       createdAt: receipt.created_at.toISOString(),
     };
-    await db.query("COMMIT");
-  } catch (error) {
-    await db.query("ROLLBACK");
-    throw error;
+  } else {
+    await db.query("BEGIN");
+    try {
+      // The migration lock is independent of the running pilot's source/work lock.
+      await db.query("SELECT pg_advisory_xact_lock(1560387,1127030)");
+      await db.query(schema);
+      let current = (await db.query("SELECT * FROM pilot_memory_meta WHERE id FOR UPDATE")).rows[0];
+      if (!current) {
+        const imported = await legacy.read();
+        const entries = entriesFrom(imported.content);
+        if (digest(imported.content) !== imported.revision)
+          throw new Error("Legacy memory checksum mismatch");
+        const commit = (
+          await db.query(
+            `INSERT INTO pilot_memory_commits(revision,agent_id,audit)
+        VALUES($1,$2,$3) RETURNING id`,
+            [
+              imported.revision,
+              agentId,
+              JSON.stringify({ kind: "lossless_legacy_migration", entryCount: entries.length }),
+            ],
+          )
+        ).rows[0];
+        for (const entry of entries)
+          await insertVersion(entry.key, entry, null, commit.id, sourceIds(entry));
+        await db.query(
+          "INSERT INTO pilot_memory_meta(id,agent_id,content,revision,commit_id) VALUES(true,$1,$2,$3,$4)",
+          [agentId, imported.content, imported.revision, commit.id],
+        );
+        await db.query(
+          `INSERT INTO pilot_memory_migrations(id,agent_id,content,revision,entry_count,commit_id)
+        VALUES(true,$1,$2,$3,$4,$5)`,
+          [agentId, imported.content, imported.revision, entries.length, commit.id],
+        );
+        current = await state();
+        const saved = (
+          await db.query("SELECT count(*)::integer AS count FROM pilot_memory_entries")
+        ).rows[0];
+        if (
+          current.content !== imported.content ||
+          current.revision !== imported.revision ||
+          saved.count !== entries.length
+        )
+          throw new Error("Lossless PostgreSQL memory migration verification failed");
+        await record({
+          type: "memory_migrated",
+          agentId,
+          revision: imported.revision,
+          entries: entries.length,
+          commitId: commit.id,
+        });
+      } else await state();
+      const receipt = (
+        await db.query(
+          "SELECT agent_id,revision,entry_count,commit_id,created_at FROM pilot_memory_migrations WHERE id",
+        )
+      ).rows[0];
+      if (!receipt || receipt.agent_id !== agentId)
+        throw new Error("Missing PostgreSQL memory migration receipt");
+      migrationReceipt = {
+        agentId: receipt.agent_id,
+        revision: receipt.revision,
+        entryCount: receipt.entry_count,
+        commitId: receipt.commit_id,
+        createdAt: receipt.created_at.toISOString(),
+      };
+      await db.query("COMMIT");
+    } catch (error) {
+      await db.query("ROLLBACK");
+      throw error;
+    }
   }
 
   // One client serializes transactions; independent clients lock the singleton.
@@ -191,10 +212,34 @@ export async function postgresUnderstanding(db, legacy, { agentId, record = asyn
   };
   const view = (row) => ({ content: row.content, revision: row.revision });
   async function mutate(build) {
+    await assertRecovery(ownerDb, "model");
     await db.query("BEGIN");
     try {
       const previous = await state(true);
       const input = await build(previous);
+      const policy = await readRecoveryPolicy(ownerDb);
+      if (policy) {
+        const work = input.workId
+          ? (await db.query("SELECT * FROM pilot_work WHERE id=$1", [input.workId])).rows[0]
+          : null;
+        if (
+          !work ||
+          work.history_episode ||
+          !work.source_ids.length ||
+          work.candidate?.operatorRequestId
+        )
+          throw new Error("Recovery gate: only fresh live work can revise memory");
+        const rows = (
+          await db.query("SELECT source FROM pilot_sources WHERE id=ANY($1::text[])", [
+            work.source_ids,
+          ])
+        ).rows;
+        if (
+          rows.length !== work.source_ids.length ||
+          rows.some((row) => !recoverySourceAllowed(policy, row.source))
+        )
+          throw new Error("Recovery gate: memory work includes protected sources");
+      }
       if (
         !input ||
         typeof input.content !== "string" ||
@@ -275,13 +320,17 @@ export async function postgresUnderstanding(db, legacy, { agentId, record = asyn
     migrationReceipt,
     read: () => serialized(async () => view(await state())),
     write: (input, metadata = {}) => serialized(() => mutate(() => ({ ...metadata, ...input }))),
-    legacy: () => legacy.legacy(),
+    legacy: async () => {
+      await assertRecovery(ownerDb, "history");
+      return legacy.legacy();
+    },
     affected: (ids) =>
       serialized(async () => [
         ...new Set(affectedEntries((await state()).content, ids).flatMap(sourceIds)),
       ]),
     invalidate: (ids) =>
       serialized(async () => {
+        await assertRecovery(ownerDb, "reset");
         let affected = [];
         await mutate((previous) => {
           const removed = affectedEntries(previous.content, ids);

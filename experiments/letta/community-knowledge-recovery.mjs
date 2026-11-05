@@ -14,6 +14,7 @@ export async function reconcilePendingHistoryDerivations(
   knowledge,
   { loadEpisode, archiveAuthority, shouldYield = async () => false },
 ) {
+  await knowledge.recovery?.("history");
   if (typeof loadEpisode !== "function" || typeof archiveAuthority !== "function")
     throw new Error("Historical derivation recovery requires injected archive readers");
   const [item] = await knowledge.pendingHistoryDerivations({ limit: 1 });

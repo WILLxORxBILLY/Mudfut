@@ -3,6 +3,7 @@ import { join, basename } from "node:path";
 import { randomUUID } from "node:crypto";
 import { digest } from "./pilot-store.mjs";
 import { safeError } from "./runtime.mjs";
+import { assertStoreRecovery, assertRecovery } from "./pilot-recovery.mjs";
 
 export function validateOperatorRequest(input) {
   if (
@@ -35,7 +36,8 @@ export function validateOperatorRequest(input) {
   };
 }
 
-export async function stageOperatorRequest(directory, input) {
+export async function stageOperatorRequest(directory, input, db) {
+  if (db) await assertRecovery(db, "operator");
   const request = validateOperatorRequest(input);
   const requests = join(directory, "operator-requests");
   await mkdir(requests, { recursive: true, mode: 0o700 });
@@ -94,6 +96,7 @@ export async function selectedOperatorRequests(directory, reject) {
 }
 
 export async function operatorRequests(store, directory, record = async () => {}) {
+  await assertStoreRecovery(store, "operator");
   const db = store.db;
   await db.query(`CREATE TABLE IF NOT EXISTS pilot_operator_requests (
     id text PRIMARY KEY, request jsonb NOT NULL, request_hash text NOT NULL,
@@ -175,6 +178,7 @@ export async function operatorRequests(store, directory, record = async () => {}
     }
   }
   async function reconcile() {
+    await assertStoreRecovery(store, "operator");
     const rows = (
       await db.query(`SELECT DISTINCT ON (r.id) r.id,w.id AS work_id,w.reply,w.validation_ids,w.candidate
       FROM pilot_operator_requests r JOIN pilot_work w ON w.candidate->>'operatorRequestId'=r.id
@@ -216,6 +220,7 @@ export async function operatorRequests(store, directory, record = async () => {}
   return {
     reconcile,
     async next() {
+      await assertStoreRecovery(store, "operator");
       await enroll();
       await reconcile();
       // The pilot's existing advisory lock owns this single writer. Prepared
@@ -235,6 +240,7 @@ export async function operatorRequests(store, directory, record = async () => {}
         : null;
     },
     async fail(id, error) {
+      await assertStoreRecovery(store, "operator");
       await reconcile();
       const result = await db.query(
         `UPDATE pilot_operator_requests SET status='failed',error=$2,completed_at=now()

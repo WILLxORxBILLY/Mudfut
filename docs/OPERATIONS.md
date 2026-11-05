@@ -104,6 +104,10 @@ Take and validate PostgreSQL backups using your own private credentials and
 retention policy. Test recovery against isolated data. Synthetic checks exercise
 recovery logic but are not evidence that your deployment's backup is restorable.
 
+For a provisional recovered state, see the [persistent recovery gate](RECOVERY.md).
+Its deliberate live-only release retains protected-source and historical intake
+restrictions; it is not installation, promotion or activation approval.
+
 Dependency containment remains in `.pnpmfile.mjs` and `patches/`. The pinned Letta
 bundles have unused MCP OAuth entry points disabled by that reproducible patch;
 ChatGPT provider renewal is separate. The sharp-electron dependency resolves to

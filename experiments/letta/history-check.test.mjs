@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import pg from "pg";
 import { state } from "./runtime.mjs";
+import { holdRecovery, releaseRecovery } from "./pilot-recovery.mjs";
 import { pilotStore, sourceRecord, digest } from "./pilot-store.mjs";
 import { currentSources } from "./pilot-discord.mjs";
 import {
@@ -637,10 +638,13 @@ test(
     const password = randomUUID().replaceAll("-", "");
     const directory = await mkdtemp(join(tmpdir(), "mudfut-manual-precision-"));
     let db,
-      roleCreated = false;
+      roleCreated = false,
+      pilotRoleCreated = false;
     try {
       await admin.query(`CREATE ROLE mudfut_history_reader LOGIN PASSWORD '${password}'`);
       roleCreated = true;
+      await admin.query(`CREATE ROLE mudfut_pilot LOGIN PASSWORD '${password}'`);
+      pilotRoleCreated = true;
       await admin.query(`CREATE DATABASE ${database}`);
       db = new pg.Client({ ...credentials, database });
       await db.connect();
@@ -681,6 +685,14 @@ test(
         JSON.stringify({ ...credentials, database, user: "mudfut_history_reader", password }),
         { mode: 0o600 },
       );
+      await writeFile(
+        join(directory, "postgres.json"),
+        JSON.stringify({ ...credentials, database, user: "mudfut_pilot", password }),
+        { mode: 0o600 },
+      );
+      // Ordinary administrative selection must remain possible while a native
+      // writer owns its separate session lock.
+      await db.query("SELECT pg_advisory_lock(1560387,1127029)");
       await writeFile(join(directory, "selection.json"), JSON.stringify(selection), {
         mode: 0o600,
       });
@@ -698,10 +710,55 @@ test(
       );
       assert.deepEqual(snapshot.pass.episodes[0].sourceIds, [records[1][0], records[2][0]]);
       assert.deepEqual(snapshot.pass.episodes[0].contextIds, [records[0][0], records[3][0]]);
+      await holdRecovery(db, {
+        baseline: "a".repeat(64),
+        protectedSourceIds: [],
+        reason: "Fictional manual staging hold",
+      });
+      await db.query("GRANT SELECT ON pilot_recovery_policy TO mudfut_pilot");
+      await writeFile(
+        join(directory, "history-postgres.json"),
+        JSON.stringify({
+          ...credentials,
+          database,
+          user: "mudfut_history_reader",
+          password: "forbidden-archive-connection",
+        }),
+        { mode: 0o600 },
+      );
+      const blocked = { ...selection, id: "blocked-by-recovery" };
+      await writeFile(join(directory, "selection.json"), JSON.stringify(blocked), { mode: 0o600 });
+      const blockedStage = () =>
+        promisify(execFile)(
+          process.execPath,
+          [
+            fileURLToPath(new URL("./pilot-history-cli.mjs", import.meta.url)),
+            "stage",
+            join(directory, "selection.json"),
+          ],
+          { env: { ...process.env, MUDFUT_STATE_DIR: directory } },
+        );
+      await assert.rejects(blockedStage, (error) => /Recovery gate/.test(error.stderr));
+      await assert.rejects(
+        readFile(join(directory, "history-selection-blocked-by-recovery.json")),
+        { code: "ENOENT" },
+      );
+      await releaseRecovery(db, {
+        expectedRevision: 1,
+        reason: "Fictional live-only release",
+        frontiers: { [channelId]: "555555555555555550" },
+        confirmLiveOnly: true,
+      });
+      await assert.rejects(blockedStage, (error) => /Recovery gate/.test(error.stderr));
+      await assert.rejects(
+        readFile(join(directory, "history-selection-blocked-by-recovery.json")),
+        { code: "ENOENT" },
+      );
     } finally {
       await db?.end();
       await admin.query(`DROP DATABASE IF EXISTS ${database} WITH (FORCE)`);
       if (roleCreated) await admin.query("DROP ROLE mudfut_history_reader");
+      if (pilotRoleCreated) await admin.query("DROP ROLE mudfut_pilot");
       await admin.end();
       await rm(directory, { recursive: true, force: true });
     }

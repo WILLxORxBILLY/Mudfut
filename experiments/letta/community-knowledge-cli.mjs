@@ -7,6 +7,7 @@ import { communityKnowledgeStatus, validateArchiveManifest } from "./community-k
 import { stageHistoryRequest, validateHistoryPass } from "./pilot-history.mjs";
 import { validateScope } from "./pilot-store.mjs";
 import { activateCommunityManifest } from "./community-knowledge-manifest.mjs";
+import { assertRecovery } from "./pilot-recovery.mjs";
 
 const [command, input] = process.argv.slice(2);
 if (
@@ -67,6 +68,7 @@ if (command === "status") {
         .rows[0].acquired;
       if (!ownsWorkerLock)
         throw new Error("Stop the pilot worker before activating a different community manifest");
+      await assertRecovery(db, "history");
       const outcome = await activateCommunityManifest(state, manifest, config);
       console.log(
         JSON.stringify({
@@ -81,6 +83,13 @@ if (command === "status") {
       await db.end().catch(() => {});
     }
   } else {
+    const preflight = new pg.Client(await privateJson(join(state, "postgres.json")));
+    try {
+      await preflight.connect();
+      await assertRecovery(preflight, "history");
+    } finally {
+      await preflight.end();
+    }
     await mkdir(state, { recursive: true, mode: 0o700 });
     const temporary = join(state, `.community-knowledge-${randomUUID()}.tmp`);
     await writeFile(temporary, JSON.stringify(manifest) + "\n", { flag: "wx", mode: 0o600 });

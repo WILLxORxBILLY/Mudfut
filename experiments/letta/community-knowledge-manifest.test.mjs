@@ -7,6 +7,7 @@ import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { validateArchiveManifest } from "./community-knowledge.mjs";
 import { validateHistoryPass } from "./pilot-history.mjs";
+import { state } from "./runtime.mjs";
 import {
   activeCommunityManifest,
   activateCommunityManifest,
@@ -113,11 +114,23 @@ test("invalid history identifiers do not publish stage or activation artifacts",
     }
     const input = join(root, "valid.json");
     await writeFile(input, JSON.stringify(boundary), { mode: 0o600 });
+    if (process.env.CHECK_DATABASE === "1")
+      await writeFile(
+        join(directory, "postgres.json"),
+        await readFile(join(state, "postgres.json")),
+        { mode: 0o600 },
+      );
     const valid = spawnSync(process.execPath, [cli, "stage", input], {
       env: { ...process.env, MUDFUT_STATE_DIR: directory },
       encoding: "utf8",
     });
-    assert.equal(valid.status, 0, valid.stderr);
+    if (process.env.CHECK_DATABASE === "1") assert.equal(valid.status, 0, valid.stderr);
+    else {
+      // Real CLI staging now requires DB policy preflight. Offline pure helpers
+      // still test immutable selection; no missing DB can mean gate absence.
+      assert.notEqual(valid.status, 0);
+      await activateCommunityManifest(directory, boundary, config);
+    }
     assert.deepEqual(await activeCommunityManifest(directory), boundary);
     const before = (await readdir(directory)).sort();
     await assert.rejects(

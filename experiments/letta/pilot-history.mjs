@@ -1,6 +1,7 @@
 import { readFile, readdir, mkdir, writeFile, link, unlink, lstat } from "node:fs/promises";
 import { randomUUID, createHash } from "node:crypto";
 import { join } from "node:path";
+import { assertStoreRecovery, assertRecovery } from "./pilot-recovery.mjs";
 import { hasTextEvidence, snowflake, sourceRecord } from "./pilot-store.mjs";
 import { currentSources } from "./pilot-discord.mjs";
 import { historyFailures } from "./pilot-history-failures.mjs";
@@ -90,7 +91,8 @@ export function textBearingHistorySources(batch) {
 }
 
 // Publish complete requests without replacing an existing pass or exposing partial JSON.
-export async function stageHistoryRequest(directory, value, config) {
+export async function stageHistoryRequest(directory, value, config, db) {
+  if (db) await assertRecovery(db, "history");
   const pass = validateHistoryPass(value, config);
   const requests = join(directory, "history-requests");
   await mkdir(requests, { recursive: true, mode: 0o700 });
@@ -307,10 +309,20 @@ export function historyQueue(store, discord, config, directory, record, history,
     get activeEpisode() {
       return activeEpisode;
     },
-    failEpisode: failures.fail,
-    deferEpisode: failures.defer,
-    deferCandidate: failures.deferCandidate,
+    failEpisode: async (...args) => {
+      await assertStoreRecovery(store, "history");
+      return failures.fail(...args);
+    },
+    deferEpisode: async (...args) => {
+      await assertStoreRecovery(store, "history");
+      return failures.defer(...args);
+    },
+    deferCandidate: async (...args) => {
+      await assertStoreRecovery(store, "history");
+      return failures.deferCandidate(...args);
+    },
     async next() {
+      await assertStoreRecovery(store, "history");
       activeEpisode = null;
       if (await shouldYield()) return null;
       await failures.ready();
@@ -533,6 +545,7 @@ function historyAutomation(store, history, directory, record, shouldYield, failu
     initialized = false;
   return {
     async admit() {
+      await assertStoreRecovery(store, "history");
       if (!history || (await shouldYield())) return;
       const path = join(directory, "history-automation.json");
       let settings,

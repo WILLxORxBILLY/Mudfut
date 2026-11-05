@@ -1,6 +1,7 @@
 import { REST, Routes } from "discord.js";
 import { sourceRecord, snowflake, digest, hasTextEvidence } from "./pilot-store.mjs";
 import { setTimeout as delay } from "node:timers/promises";
+import { assertStoreRecovery } from "./pilot-recovery.mjs";
 
 function transientDiscordRead(error) {
   if (error?.status != null)
@@ -248,8 +249,10 @@ export async function refreshSources(
   knowledge,
 ) {
   // Bounded background sweep; explicit IDs validate evidence used by a turn.
+  await assertStoreRecovery(store);
   const rows = await store.validationSources(ids);
   const currentRows = rows.filter((row) => !row.deleted);
+  for (const row of currentRows) await assertStoreRecovery(store, "live", row.source);
   // An earlier crash can persist the pilot tombstone before the knowledge-side
   // invalidation. Explicit evidence validation sees those tombstones and repairs
   // the knowledge projection before any caller receives the old candidate.
@@ -331,6 +334,7 @@ export async function currentSources(discord, sources, checkpoint = async () => 
 
 export function archiveTool(store, discord, config, history) {
   return async (input) => {
+    await assertStoreRecovery(store, "history");
     archiveInput(input);
     const parameters = [
       input.messageId ?? null,

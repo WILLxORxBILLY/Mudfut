@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
+import { assertRecovery } from "./pilot-recovery.mjs";
 import {
   canonicalDigest,
   digest as pilotDigest,
@@ -676,6 +677,7 @@ function receipt(db, kind, detail) {
 }
 
 export async function communityKnowledge(db) {
+  await assertRecovery(db, "history");
   await db.query(schema);
   // Correction cases are durable audit records: the referenced source may later
   // disappear, so this must not make source cleanup or recovery impossible.
@@ -2469,7 +2471,8 @@ export async function communityKnowledge(db) {
     return results;
   }
   await reconcileOpenCorrections();
-  return {
+  const api = {
+    recovery: (kind) => assertRecovery(db, kind),
     installManifest,
     bindHistoryProjection,
     pendingHistoryDerivations,
@@ -2496,6 +2499,17 @@ export async function communityKnowledge(db) {
     completeRequeuedEpisode,
     reconcileOpenCorrections,
   };
+  return new Proxy(api, {
+    get(target, key) {
+      const fn = target[key];
+      return typeof fn !== "function" || key === "recovery"
+        ? fn
+        : async (...args) => {
+            await assertRecovery(db, "history");
+            return fn(...args);
+          };
+    },
+  });
 }
 
 // The first semantic pass is intentionally a projection of the existing sourced
