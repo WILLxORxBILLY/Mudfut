@@ -12,6 +12,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import test from "node:test";
 import { SCRIPT_CHECKOUT, sourceIdentity } from "./release-preflight.mjs";
 
@@ -379,6 +380,69 @@ test("CLI honors a cached project package-manager pin without enabling network a
   assert.equal(report.status, "source-identified");
   assert.equal(report.versions.pnpm.observed, "11.28.7");
   assert.equal(git(root, "status", "--porcelain"), "");
+});
+
+test("symlink CLI entries reject invalid usage in both Node main-path modes", (t) => {
+  const directory = realpathSync(mkdtempSync(join(tmpdir(), "mudfut-entry-alias-")));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const file = join(directory, "fictional-entry.mjs");
+  symlinkSync(join(SCRIPT_CHECKOUT, "experiments/letta/release-preflight.mjs"), file);
+  const checkout = join(directory, "checkout");
+  symlinkSync(SCRIPT_CHECKOUT, checkout, "dir");
+  for (const flags of [[], ["--preserve-symlinks-main"]]) {
+    for (const script of [file, join(checkout, "experiments/letta/release-preflight.mjs")]) {
+      const result = spawnSync(process.execPath, [...flags, script, "--unknown"], {
+        cwd: directory,
+        env: gitEnv,
+        encoding: "utf8",
+        timeout: 20_000,
+      });
+      assert.equal(result.error, undefined);
+      assert.equal(result.status, 1, "alias must not silently skip the CLI");
+      assert.equal(result.stderr, "");
+      assert.equal(JSON.parse(result.stdout).status, "rejected");
+    }
+  }
+});
+
+test("aliased CLI defaults to its implementation checkout, not the alias or caller", (t) => {
+  const caller = fixture(t);
+  const alias = join(caller, "fictional-entry.mjs");
+  symlinkSync(join(SCRIPT_CHECKOUT, "experiments/letta/release-preflight.mjs"), alias);
+  for (const flags of [[], ["--preserve-symlinks-main"]]) {
+    const result = spawnSync(process.execPath, [...flags, alias], {
+      cwd: caller,
+      env: gitEnv,
+      encoding: "utf8",
+      timeout: 20_000,
+    });
+    assert.equal(result.error, undefined);
+    const report = JSON.parse(result.stdout);
+    assert.equal(report.source.commit, git(SCRIPT_CHECKOUT, "rev-parse", "HEAD").trim());
+    assert.notEqual(report.source.commit, git(caller, "rev-parse", "HEAD").trim());
+    assert.equal(report.qualification.installedRuntime, "unverified");
+  }
+});
+
+test("importing through an alias from eval or stdin never runs the CLI", (t) => {
+  const directory = realpathSync(mkdtempSync(join(tmpdir(), "mudfut-import-alias-")));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const alias = join(directory, "fictional-entry.mjs");
+  symlinkSync(join(SCRIPT_CHECKOUT, "experiments/letta/release-preflight.mjs"), alias);
+  const input = `await import(${JSON.stringify(pathToFileURL(alias).href)});`;
+  for (const args of [["--eval", input], ["-"]]) {
+    const result = spawnSync(process.execPath, ["--input-type=module", ...args], {
+      cwd: directory,
+      env: gitEnv,
+      input,
+      encoding: "utf8",
+      timeout: 20_000,
+    });
+    assert.equal(result.error, undefined);
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stdout, "");
+    assert.equal(result.stderr, "");
+  }
 });
 
 test("preflight imports only Node builtins, not production/runtime/network modules", () => {
