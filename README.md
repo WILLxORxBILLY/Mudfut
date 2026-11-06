@@ -57,9 +57,13 @@ no original server, messages, channel IDs, memory or access is shared.
 
 The default personality is named Mudfüt. An optional operator style file can
 change the name and voice while retaining the source/tool/evidence instructions.
-The model is configurable within the existing subscription provider. Availability
-and subscription access depend on your account; there is no automatic paid API
-fallback. Authentication is required only for model-backed bot operations, not
+The model is a `"<provider>/<model>"` handle and any provider the bundled Letta
+runtime can authenticate works — a ChatGPT or Claude subscription login, an API
+key for OpenAI, Anthropic, Gemini, OpenRouter, Groq, xAI and others, a local
+OpenAI-compatible endpoint, Ollama, or LM Studio. Nothing is bundled and no
+provider is assumed; you supply the credential your model needs. At startup the
+bot checks that provider has credentials and stops with a specific message if it
+does not. Authentication is required only for model-backed bot operations, not
 for fixture tests.
 
 ## Where it runs

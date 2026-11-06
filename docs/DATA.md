@@ -13,8 +13,11 @@ command. The operator chooses an appropriate server/channel and explains that
 policy before enabling the bot. Original source edits/deletions, attribution,
 exact quotations and currentness checks remain required.
 
-Model-backed operations send selected messages, context and memory to the
-configured provider through the operator's own account. Ordinary synthetic fixture tests make no model call. Optional model proofs and
+Model-backed operations send selected messages, context and memory to whichever
+provider `MUDFUT_MODEL` names, authenticated by the operator. That provider may be
+a subscription service, an API-key service, or a local endpoint you run yourself;
+the choice is yours and the data leaves the machine only to that provider. Ordinary
+synthetic fixture tests make no model call. Optional model proofs and
 private evaluations are explicit separate commands; they can retain source text,
 model replies and tool traces outside Git. Account/model access is not bundled
 with the source license and is not guaranteed by this project.

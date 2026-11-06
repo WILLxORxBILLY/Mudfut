@@ -69,31 +69,51 @@ Do not paste tokens into issues, commit them, or put them in shell commands or
 screenshots. The runtime checks the channel's guild identity before processing.
 Keep any other bot runtime using this identity from replying in the same channel.
 
-## 4. Sign in with your own account
+## 4. Authenticate a model provider
 
-The current runtime uses Letta's renewable ChatGPT provider login. Keep its
-provider store in this installation's private state directory:
+Mudfut is model-agnostic. It uses whatever provider `MUDFUT_MODEL` names, and
+authenticates it however that provider allows: a subscription login, an API key,
+or a local endpoint.
+
+Store a credential in this installation's private Letta provider store:
 
 ```sh
-LETTA_LOCAL_BACKEND_DIR="$MUDFUT_STATE_DIR/letta"   node node_modules/@letta-ai/letta-code/letta.js --backend local connect chatgpt
+LETTA_LOCAL_BACKEND_DIR="$MUDFUT_STATE_DIR/letta" \
+  node node_modules/@letta-ai/letta-code/letta.js --backend local connect chatgpt
 ```
 
-Complete the native login flow yourself. No original maintainer token or account
-is shipped. The login must provide a renewable token in this installation's Letta
-provider store. Supported models and availability depend on your account and the
-pinned runtime. This release has no paid API-key fallback.
+Replace `chatgpt` with any provider the runtime offers — `anthropic`, `openai`,
+`openai-compatible`, `gemini`, `openrouter`, `groq`, `ollama`, `lmstudio`,
+`amazon-bedrock`, and so on. `letta connect --help` lists them. Complete the
+login flow yourself; no maintainer credential is shipped.
 
-The older `MUDFUT_AUTH_MODE=codex-snapshot` path exists for the opt-in fictional
-model proof and copies a short-lived access-token snapshot; it is not the
-unattended bot setup. Never transfer either credential store to CI or a repository.
+Alternatively, export the provider's usual API-key variable in the environment
+that starts the bot — `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GEMINI_API_KEY`,
+`OPENROUTER_API_KEY`, `OLLAMA_API_KEY`, and so on. An environment key is used in
+preference to nothing and is never copied into the state directory. One provider
+is not inherited blindly: `LETTA_API_KEY` is always removed from the bot's
+environment so the agent backend cannot silently borrow unrelated cloud
+credentials.
+
+At startup the supervisor checks the configured provider actually has
+credentials and stops with a specific message if it does not, rather than failing
+mid-turn. Set `MUDFUT_REQUIRE_CREDENTIALS=0` to skip that check.
+
+`MUDFUT_AUTH_MODE=codex-snapshot` remains for the opt-in fictional model proof: it
+copies a short-lived ChatGPT access token from `~/.codex/auth.json` and only
+supports `chatgpt-plus-pro/...` models. It is not the unattended setup. Never
+transfer any credential store to CI or a repository.
 
 ## 5. Configure and start
 
-Copy `.env.example` to `.env`, set the same absolute `MUDFUT_STATE_DIR`, and keep
-`MUDFUT_AUTH_MODE=letta`. Select a model your own provider login supports through
-`MUDFUT_MODEL`. Optional `MUDFUT_PERSONA_STYLE_FILE` names an absolute path to a
-small regular UTF-8 style file; see `examples/persona-style.md`. The built-in
-source and tool rules remain ahead of these style preferences.
+Copy `.env.example` to `.env` and set the same absolute `MUDFUT_STATE_DIR`. Set
+`MUDFUT_MODEL` to a `"<provider>/<model>"` handle the provider you authenticated
+can serve — for example `chatgpt-plus-pro/gpt-6-sol`,
+`lc-anthropic/claude-sonnet-4-5`, `openai/gpt-5.1`,
+`openai-compatible/qwen2.5-72b-instruct`. Optional `MUDFUT_PERSONA_STYLE_FILE`
+names an absolute path to a small regular UTF-8 style file; see
+`examples/persona-style.md`. The built-in source and tool rules remain ahead of
+these style preferences.
 
 ```sh
 pnpm start

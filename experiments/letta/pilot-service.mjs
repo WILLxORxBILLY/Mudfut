@@ -77,7 +77,7 @@ if (command === "install") {
       .map((argument) => `<string>${xml(argument)}</string>`)
       .join("")}</array>
 <key>WorkingDirectory</key><string>${xml(resolve(root, "../.."))}</string>
-<key>EnvironmentVariables</key><dict><key>MUDFUT_STATE_DIR</key><string>${xml(state)}</string><key>MUDFUT_AUTH_MODE</key><string>letta</string><key>PATH</key><string>${xml(dirname(process.execPath))}:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string></dict>
+<key>EnvironmentVariables</key><dict><key>MUDFUT_STATE_DIR</key><string>${xml(state)}</string><key>MUDFUT_AUTH_MODE</key><string>${xml(process.env.MUDFUT_AUTH_MODE ?? "letta")}</string><key>PATH</key><string>${xml(dirname(process.execPath))}:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>${process.env.MUDFUT_MODEL ? `<key>MUDFUT_MODEL</key><string>${xml(process.env.MUDFUT_MODEL)}</string>` : ""}</dict>
 <key>RunAtLoad</key><true/><key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict>
 <key>ThrottleInterval</key><integer>30</integer><key>ExitTimeOut</key><integer>25</integer>
 <key>ProcessType</key><string>Background</string>

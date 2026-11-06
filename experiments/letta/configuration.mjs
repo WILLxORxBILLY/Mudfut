@@ -20,13 +20,40 @@ export function resumePreflight(plistExists) {
   return { failures: [], held: false, running: false };
 }
 
-export function configuredModel(value = "chatgpt-plus-pro/gpt-6-sol") {
+// Mudfut is model-agnostic: any provider name the local Letta runtime can
+// authenticate works here. The runtime decides which credentials exist; this
+// module only rejects shapes that cannot be a provider handle at all, so a bad
+// value fails before a worker spawns rather than in the middle of a turn.
+//
+// A handle is "<provider>/<model>". The provider segment is matched loosely
+// because local provider names are the runtime's to define ("chatgpt-plus-pro",
+// "lc-anthropic", "openai", "openai-compatible", "ollama", ...). The model
+// segment must not be empty, must not contain whitespace or a path separator,
+// and cannot begin with a dot, so it cannot escape or inject.
+const HANDLE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}\/[A-Za-z0-9][A-Za-z0-9._:/-]{0,199}$/;
+
+export const DEFAULT_MODEL = "chatgpt-plus-pro/gpt-6-sol";
+
+export function configuredModel(value = DEFAULT_MODEL) {
+  if (typeof value !== "string" || !HANDLE.test(value.trim()))
+    throw new Error(
+      'MUDFUT_MODEL must be a "<provider>/<model>" handle naming a model the configured provider can serve',
+    );
   if (
-    typeof value !== "string" ||
-    !/^chatgpt-plus-pro\/[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/.test(value)
+    value
+      .trim()
+      .split("/")
+      .slice(1)
+      .join("/")
+      .split("/")
+      .some((segment) => segment === "..")
   )
-    throw new Error("MUDFUT_MODEL must name a model in the chatgpt-plus-pro provider");
-  return value;
+    throw new Error("MUDFUT_MODEL must not contain a parent path segment");
+  return value.trim();
+}
+
+export function modelProvider(model) {
+  return configuredModel(model).split("/")[0];
 }
 
 export async function personaStyle(path) {

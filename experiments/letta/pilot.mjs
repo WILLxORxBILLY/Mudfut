@@ -3,7 +3,7 @@ import pg from "pg";
 import { readFile, lstat, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
-import { state, assertPrivateState, safeError, saveJson } from "./runtime.mjs";
+import { state, assertPrivateState, safeError, saveJson, runtimeModel } from "./runtime.mjs";
 import { pilotStore, validateScope, deliver } from "./pilot-store.mjs";
 import {
   ownedExternal,
@@ -55,8 +55,14 @@ import { reconcilePendingHistoryDerivations } from "./community-knowledge-recove
 
 process.umask(0o077);
 assertPrivateState(state);
-if (process.env.MUDFUT_AUTH_MODE !== "letta")
-  throw new Error("Use MUDFUT_AUTH_MODE=letta for renewable subscription operation");
+if (
+  process.env.MUDFUT_AUTH_MODE &&
+  !["letta", "codex-snapshot"].includes(process.env.MUDFUT_AUTH_MODE)
+)
+  throw new Error('MUDFUT_AUTH_MODE must be "letta" (default) or "codex-snapshot"');
+// The model is whatever MUDFUT_MODEL names; the runtime is asked to authenticate it
+// in prepareRuntime(), so an unconfigured provider fails before any work is claimed.
+runtimeModel();
 const mode = process.argv[2] ?? "run";
 if (!["run", "once", "status", "recall-proof"].includes(mode))
   throw new Error("Use run, once, status or recall-proof");
