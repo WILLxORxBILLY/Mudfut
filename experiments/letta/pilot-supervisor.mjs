@@ -176,7 +176,12 @@ export async function supervise({
       child = spawn(process.execPath, [worker, ...args], {
         detached: true,
         cwd: resolve(root, "../.."),
-        env: { ...process.env, MUDFUT_STATE_DIR: directory, MUDFUT_AUTH_MODE: "letta" },
+        env: {
+          ...process.env,
+          MUDFUT_STATE_DIR: directory,
+          // Preserve an operator-chosen auth mode; default to the local provider store.
+          MUDFUT_AUTH_MODE: process.env.MUDFUT_AUTH_MODE ?? "letta",
+        },
         stdio: ["ignore", "inherit", "inherit", "ipc"],
       });
       const completion = new Promise((accept) => {

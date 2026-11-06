@@ -102,6 +102,20 @@ export async function pilotModel(
     identity.personaRevision = personaRevision;
     await saveJson(join(state, "pilot-agent.json"), identity);
   }
+  // The agent persists the model it was created with. An operator who switches
+  // MUDFUT_MODEL expects the switch to take effect, so reconcile it explicitly
+  // and record the change rather than silently running the old model.
+  if (identity.model !== model) {
+    await client.agents.update(identity.agentId, { model });
+    await record({
+      type: "model_update",
+      agentId: identity.agentId,
+      from: identity.model ?? null,
+      to: model,
+    });
+    identity.model = model;
+    await saveJson(join(state, "pilot-agent.json"), identity);
+  }
   const options = (tools) => ({
     cwd: join(state, "work"),
     tools,

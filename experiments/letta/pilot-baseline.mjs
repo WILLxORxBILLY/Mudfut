@@ -71,12 +71,15 @@ function historyConfig(bytes) {
   return config;
 }
 
-const [{ assertPrivateState, state, saveJson, safeError }, { pilotModel, record }, snapshot] =
-  await Promise.all([
-    import("./runtime.mjs"),
-    import("./pilot-model.mjs"),
-    import("./pilot-baseline-snapshot.mjs"),
-  ]);
+const [
+  { assertPrivateState, state, saveJson, safeError, runtimeModel },
+  { pilotModel, record },
+  snapshot,
+] = await Promise.all([
+  import("./runtime.mjs"),
+  import("./pilot-model.mjs"),
+  import("./pilot-baseline-snapshot.mjs"),
+]);
 
 assertPrivateState(packetDirectory);
 assertPrivateState(runDirectory);
@@ -163,7 +166,7 @@ try {
     case: selected,
     caseInput: { kind: evaluationInput.kind, digest: evaluationInput.digest },
     codeRevision,
-    model: "chatgpt-plus-pro/gpt-6-sol",
+    model: runtimeModel(),
     initialMemoryRevision: baseline.memory.revision,
     packetDigests: baseline.packetDigests,
     packetSourceCount: baseline.sources.length,
