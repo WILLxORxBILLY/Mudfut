@@ -9,6 +9,17 @@ export function serviceProgramArguments(executable, runtimeRoot) {
   ];
 }
 
+// Deliberate resume is the only path that may clear a latched failure, so it must
+// prove a supervisor can actually be started first. Clearing the receipt and then
+// failing to bootstrap would drop the hold without running anything.
+export function resumePreflight(plistExists) {
+  if (!plistExists)
+    throw new Error(
+      "Service is not installed; run install before resume so the held receipt is not cleared without a supervisor to start",
+    );
+  return { failures: [], held: false, running: false };
+}
+
 export function configuredModel(value = "chatgpt-plus-pro/gpt-6-sol") {
   if (
     typeof value !== "string" ||

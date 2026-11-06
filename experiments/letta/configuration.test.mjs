@@ -6,7 +6,12 @@ import { tmpdir } from "node:os";
 import { execFileSync, spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
-import { configuredModel, personaStyle, serviceProgramArguments } from "./configuration.mjs";
+import {
+  configuredModel,
+  personaStyle,
+  resumePreflight,
+  serviceProgramArguments,
+} from "./configuration.mjs";
 
 test("supervisor refuses repository state before process metadata or failure logging", async () => {
   const directory = fileURLToPath(new URL(`../../.invalid-state-${randomUUID()}`, import.meta.url));
@@ -114,6 +119,13 @@ test("deployment model selection stays inside the configured subscription provid
     "chatgpt-plus-pro/../secret",
   ])
     assert.throws(() => configuredModel(value), /MUDFUT_MODEL/);
+});
+
+test("resume refuses to clear a held receipt when no supervisor is installed", () => {
+  // Clearing the hold is the only way past a quota latch, so it may not happen
+  // unless a plist exists for launchctl bootstrap to load.
+  assert.throws(() => resumePreflight(false), /run install before resume/);
+  assert.deepEqual(resumePreflight(true), { failures: [], held: false, running: false });
 });
 
 test("optional persona style is local, bounded, nonempty and cannot follow a symlink", async () => {
