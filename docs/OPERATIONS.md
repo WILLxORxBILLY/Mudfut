@@ -19,6 +19,15 @@ HTTP 429 throttling and retryable service outages retain bounded retries.
 Quota errors are infrastructure failures; historical episodes retain their
 existing state and receipts.
 
+A fresh ChatGPT OAuth login does not clear a usage window. The pilot's provider
+login and any personal Codex login on the same machine can resolve to the same
+`chatgpt_account_id`, so they share one Codex usage pool; re-authenticating as the
+same person starts a new session against an already-spent plan. Confirm the reset
+time the provider reports before resuming, since a quota hold otherwise repeats
+within one turn of the next start. `pnpm bot:status` and `resume` both read the
+recovery receipt, so inspect the receipt before clearing it: `resume` restarts the
+recovering budget, not the provider quota.
+
 The `pilot-service.mjs` installer is an optional macOS user LaunchAgent. It is
 not a portable Linux service manager; use foreground operation or your own
 reviewed service configuration elsewhere. Its default service identity supports

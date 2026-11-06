@@ -1,11 +1,11 @@
 import { execFileSync } from "node:child_process";
-import { mkdir, writeFile, readFile, rm, open } from "node:fs/promises";
+import { mkdir, writeFile, readFile, rm, open, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { state, root, assertPrivateState, saveJson } from "./runtime.mjs";
 import { readRecovery } from "./pilot-supervisor.mjs";
 import { setTimeout as delay } from "node:timers/promises";
-import { serviceProgramArguments } from "./configuration.mjs";
+import { resumePreflight, serviceProgramArguments } from "./configuration.mjs";
 
 process.umask(0o077);
 if (process.platform !== "darwin") throw new Error("This service installer targets macOS launchd");
@@ -94,10 +94,21 @@ if (command === "install") {
   if (command === "uninstall") await rm(plist, { force: true });
 } else if (command === "resume") {
   await stopService();
+  // An uninstalled or renamed plist cannot be bootstrapped, so refuse before the
+  // receipt is cleared; otherwise a resumed install silently stays stopped.
+  const cleared = resumePreflight(
+    await stat(plist).then(
+      (info) => info.isFile(),
+      (error) => {
+        if (error.code === "ENOENT") return false;
+        throw error;
+      },
+    ),
+  );
   // Explicit operator action resets the latched retry budget; pending work stays.
   const previous = await readRecovery(state);
   await saveJson(join(state, `recovery-resume-${Date.now()}.json`), previous);
-  await saveJson(join(state, "pilot-recovery.json"), { failures: [], held: false, running: false });
+  await saveJson(join(state, "pilot-recovery.json"), cleared);
   launchctl(["bootstrap", domain, plist]);
 }
 console.log(
