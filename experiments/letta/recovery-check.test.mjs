@@ -2,11 +2,13 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtemp, readFile, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
+import { randomUUID } from "node:crypto";
 import { spawn, execFileSync } from "node:child_process";
 import pg from "pg";
-import { state, providerQuotaExhausted } from "./runtime.mjs";
+import { state, root, providerQuotaExhausted } from "./runtime.mjs";
 import { historicalFailureClass } from "./pilot-history-failures.mjs";
+import { holdRecovery } from "./pilot-recovery.mjs";
 import { setTimeout as delay } from "node:timers/promises";
 import {
   recoveryDecision,
@@ -243,6 +245,123 @@ await supervise({worker:${JSON.stringify(worker)},policy:{attempts:5,windowMs:90
 );
 
 test(
+  "a terminal gate refusal exits the worker with a non-signal code and holds the supervisor",
+  { skip: process.env.CHECK_DATABASE !== "1", timeout: 60000 },
+  async () => {
+    const credentials = JSON.parse(await readFile(join(state, "postgres.json"), "utf8"));
+    assert.equal(credentials.user, "mudfut_fixture");
+    const password = randomUUID().replaceAll("-", "");
+    const admin = new pg.Client(credentials);
+    const directory = await mkdtemp(join(tmpdir(), "mudfut-terminal-"));
+    const database = "mudfut_pilot";
+    let db, roleCreated, databaseCreated;
+    try {
+      await admin.connect();
+      await admin.query(`CREATE ROLE mudfut_pilot LOGIN PASSWORD '${password}'`);
+      roleCreated = true;
+      await admin.query(`CREATE DATABASE ${database} OWNER mudfut_pilot`);
+      databaseCreated = true;
+      const connection = { ...credentials, database, user: "mudfut_pilot", password };
+      // The real worker enforces its own scope, so this is the exact production shape.
+      await writeFile(
+        join(directory, "pilot.json"),
+        JSON.stringify({ guildId: "111111111111111111", channelId: "222222222222222222" }),
+        { mode: 0o600 },
+      );
+      await writeFile(join(directory, "postgres.json"), JSON.stringify(connection), {
+        mode: 0o600,
+      });
+      await writeFile(join(directory, "discord-token"), "fictional-token", { mode: 0o600 });
+      db = new pg.Client(connection);
+      await db.connect();
+      // A held policy is the gate refusal: the worker cannot start under it.
+      await holdRecovery(db, {
+        baseline: "a".repeat(64),
+        protectedSourceIds: ["555555555555555501"],
+        reason: "Fictional hold for terminal exit verification",
+      });
+      // holdRecovery claims the installation lock on this session; release it so
+      // the spawned worker can own the database and reach the policy itself.
+      await db.query("SELECT pg_advisory_unlock(1560387,1127029)");
+      const supervisor = new URL("./pilot-supervisor.mjs", import.meta.url).href;
+      const worker = resolve(root, "pilot.mjs");
+      // The real hang was an unresolved handle outliving the refusal — the SDK
+      // child, a pool socket, the IPC channel. A wrapper reproduces exactly that
+      // shape without a network or model call: one handle that never settles.
+      const stuck = join(directory, "stuck.mjs");
+      await writeFile(
+        stuck,
+        `// ponytail: one unresolved timer stands in for the SDK child handle; a real
+// model turn cannot be exercised model-free.
+setInterval(() => {}, 1000);
+await import(${JSON.stringify(worker)});
+`,
+      );
+      const wrapper = join(directory, "supervise.mjs");
+      await writeFile(
+        wrapper,
+        `import {supervise} from ${JSON.stringify(supervisor)};
+await supervise({
+  worker: ${JSON.stringify(stuck)},
+  args: ["once"],
+  policy: { attempts: 5, windowMs: 900000, backoffMs: [10] },
+  // Far longer than the two seconds a terminal worker may take, so a regression
+  // that lingers shows up as a watchdog kill rather than a merely slow exit.
+  watchdogMs: 3000,
+});
+`,
+      );
+      const started = Date.now();
+      const child = spawn(process.execPath, [wrapper], {
+        env: { ...process.env, MUDFUT_STATE_DIR: directory },
+        stdio: "ignore",
+      });
+      // The supervisor returns on its own only if the receipt latched to held;
+      // under a retry it would keep respawning until its attempt budget ran out.
+      assert.deepEqual(await exited(child), { code: 0, signal: null });
+      assert.ok(Date.now() - started < 3000, "terminal worker must exit before the watchdog");
+      const receipt = await json(join(directory, "pilot-recovery.json"));
+      assert.equal(receipt.held, true);
+      assert.equal(receipt.running, false);
+      assert.equal(receipt.nextAttemptAt, null);
+      // Exit 78 with no signal: the worker is terminal, not watchdog-killed.
+      assert.equal(receipt.lastExit.code, 78);
+      assert.equal(receipt.lastExit.signal, null);
+      // The watchdog never fired, so the worker did not linger on the handle.
+      const events = (await readFile(join(directory, "transcripts", "pilot.jsonl"), "utf8"))
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line));
+      assert.deepEqual(
+        events.filter((event) => event.type === "worker_watchdog").map((event) => event.workerPid),
+        [],
+      );
+      assert.equal(events.filter((event) => event.type === "worker_spawned").length, 1);
+      const failure = events.find((event) => event.type === "failure");
+      assert.equal(failure.phase, "startup");
+      assert.equal(failure.recoveryRefusal, true);
+      assert.equal(failure.retryable, false);
+      // The same exit is held on its own, without burning the retry budget, and a
+      // watchdog SIGKILL (code null) is explicitly not held.
+      const decision = recoveryDecision({ failures: [] }, receipt.lastExit, 1000);
+      assert.equal(decision.held, true);
+      assert.equal(decision.nextAttemptAt, null);
+      assert.deepEqual(decision.failures, [1000]);
+      assert.equal(
+        recoveryDecision({ failures: [] }, { code: null, signal: "SIGKILL" }, 1000).held,
+        false,
+      );
+    } finally {
+      await db?.end();
+      if (databaseCreated) await admin.query(`DROP DATABASE IF EXISTS ${database} WITH (FORCE)`);
+      if (roleCreated) await admin.query("DROP ROLE IF EXISTS mudfut_pilot");
+      await admin.end();
+      await rm(directory, { recursive: true, force: true });
+    }
+  },
+);
+
+test(
   "SIGKILL preserves prepared memory and reconciles accepted delivery without a second send",
   { skip: process.env.CHECK_DATABASE !== "1", timeout: 30000 },
   async () => {
@@ -325,6 +444,77 @@ if(phase==='prepare'){
       await db?.end();
       await admin.query(`DROP DATABASE IF EXISTS ${database} WITH (FORCE)`).catch(() => {});
       await admin.end();
+      await rm(directory, { recursive: true, force: true });
+    }
+  },
+);
+
+test(
+  "an induced recovery refusal exits 78 without a signal and holds without spending the budget",
+  { timeout: 30000 },
+  async () => {
+    const directory = await mkdtemp(join(tmpdir(), "mudfut-gate-exit-"));
+    const supervisor = new URL("./pilot-supervisor.mjs", import.meta.url).href;
+    const worker = join(directory, "worker.mjs"),
+      wrapper = join(directory, "supervise.mjs"),
+      receipt = join(directory, "pilot-recovery.json"),
+      attempts = join(directory, "attempt.json");
+    // The real worker stamps PILOT_RECOVERY_GATE and exits 78 when the gate refuses
+    // (pilot.mjs). This stub reproduces that terminal shape so the supervisor
+    // contract is verified without a database.
+    await writeFile(
+      worker,
+      `import { readFileSync, writeFileSync } from "node:fs";
+const path = process.env.MUDFUT_STATE_DIR + "/attempt.json";
+let n = 0;
+try {
+  n = JSON.parse(readFileSync(path, "utf8"));
+} catch (error) {
+  if (error.code !== "ENOENT") throw error;
+}
+writeFileSync(path, JSON.stringify(n + 1), { mode: 0o600 });
+const error = Object.assign(new Error("Recovery gate: fictional terminal refusal"), {
+  code: "PILOT_RECOVERY_GATE",
+});
+console.error(error.message);
+process.exitCode = 78;
+if (process.connected) process.disconnect();
+`,
+    );
+    await writeFile(
+      wrapper,
+      `import {supervise} from ${JSON.stringify(supervisor)};
+await supervise({worker:${JSON.stringify(worker)},policy:{attempts:5,windowMs:900000,backoffMs:[10]},watchdogMs:60000});
+`,
+    );
+    await writeFile(receipt, JSON.stringify({ failures: [], held: false, running: false }));
+    const child = spawn(process.execPath, [wrapper], {
+      env: { ...process.env, MUDFUT_STATE_DIR: directory },
+      stdio: "ignore",
+    });
+    try {
+      // A retry would respawn until the five-attempt budget ran out; a single held
+      // outcome returns immediately with exit 0 so launchd cannot crash-restart it.
+      assert.deepEqual(await exited(child), { code: 0, signal: null });
+      const held = await json(receipt);
+      assert.equal(held.held, true);
+      assert.equal(held.running, false);
+      // Non-retryable: no next attempt is scheduled and the budget is untouched.
+      assert.equal(held.nextAttemptAt, null);
+      assert.deepEqual(held.lastExit, { code: 78, signal: null });
+      assert.equal(held.failures.length, 1);
+      assert.equal(await json(attempts), 1);
+      const decision = recoveryDecision({ failures: [] }, held.lastExit, 1000);
+      assert.equal(decision.held, true);
+      assert.equal(decision.nextAttemptAt, null);
+      assert.deepEqual(decision.failures, [1000]);
+      // A watchdog SIGKILL carries no exit code and stays retryable.
+      assert.equal(
+        recoveryDecision({ failures: [] }, { code: null, signal: "SIGKILL" }, 1000).held,
+        false,
+      );
+    } finally {
+      child.kill("SIGTERM");
       await rm(directory, { recursive: true, force: true });
     }
   },
