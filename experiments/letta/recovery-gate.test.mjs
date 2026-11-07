@@ -8,6 +8,8 @@ import { state } from "./runtime.mjs";
 import { pilotStore, sourceRecord, deliver, digest } from "./pilot-store.mjs";
 import { pollLiveChannels } from "./pilot-live-channels.mjs";
 import { historyQueue } from "./pilot-history.mjs";
+import { archiveTool } from "./pilot-discord.mjs";
+import { archiveDiscussions } from "./pilot-discussions.mjs";
 import { postgresUnderstanding } from "./pilot-memory-postgres.mjs";
 import { encodeUnderstanding } from "./pilot-memory.mjs";
 
@@ -34,6 +36,30 @@ const value = (id = a, content = "Fictional recovery fixture") =>
     config.guildId,
     config.channelId,
   );
+// Seeds a source row as pre-existing historical state, bypassing the write guard
+// the way a pre-policy ingest would have. Used only to reproduce production shape.
+async function seedHistorical(db, id, content) {
+  await db.query("ALTER TABLE pilot_sources DISABLE TRIGGER USER");
+  try {
+    await db.query(
+      `INSERT INTO pilot_sources(id,source,hash,deleted,learnable)
+       VALUES($1,$2,$3,false,true)`,
+      [
+        id,
+        {
+          id,
+          channelId: config.channelId,
+          guildId: config.guildId,
+          content,
+          createdAt: "2026-01-01T00:00:00Z",
+        },
+        digest(content),
+      ],
+    );
+  } finally {
+    await db.query("ALTER TABLE pilot_sources ENABLE TRIGGER USER");
+  }
+}
 const policy = {
   version: 1,
   phase: "held",
@@ -278,6 +304,182 @@ test(
         });
         await assert.rejects(queue.next(), /recovery/i);
         assert.equal(callbacks, 0);
+      }
+    }),
+);
+
+test(
+  "live-only permits read-only archive recall while derivation and pre-boot history stay closed",
+  database,
+  () =>
+    fixture("archive_read", async ({ db, store, hold, snapshot }) => {
+      // A real (if empty) queue directory: this proves the admission path, not a
+      // merely absent archive client.
+      const directory = await mkdtemp(join(tmpdir(), "recovery-archive-read-"));
+      try {
+        const episode = {
+          key: "one",
+          label: "Fictional history",
+          guildId: config.guildId,
+          channelId: config.channelId,
+          sourceIds: [a],
+          contextIds: [],
+        };
+        await db.query(
+          "INSERT INTO pilot_history_episodes(id,pass_id,manifest) VALUES('fictional-pass:one','fictional-pass',$1)",
+          [episode],
+        );
+        // Pre-boot (pre-frontier, unprotected) history that must never be admitted.
+        const preBoot = value(b, "Fictional pre-boot history");
+        const original = {
+          id: preBoot.id,
+          channel_id: config.channelId,
+          guild_id: config.guildId,
+          author: { id: preBoot.authorId, username: "Fixture" },
+          content: preBoot.content,
+          timestamp: preBoot.createdAt,
+          type: 0,
+        };
+        const discord = { get: async (_channel, id) => ({ ...original, id }) };
+        const calls = [];
+        const archive = {
+          async query(sql, args) {
+            calls.push(sql);
+            if (/^\s*BEGIN/i.test(sql) || /^\s*(COMMIT|ROLLBACK)/i.test(sql))
+              return { rows: [], rowCount: 0 };
+            // Anchor/exact reads answer with the pre-boot original only; neighbor
+            // and gap queries stay empty so the shape stays simple.
+            if (
+              /m\.message_id=\$1|m\.message_id=\$1\b/.test(sql) ||
+              /WHERE m\.message_id=\$1/.test(sql)
+            )
+              return {
+                rows: [
+                  {
+                    id: original.id,
+                    guildId: config.guildId,
+                    channelId: config.channelId,
+                    at: "2026-01-01T00:00:00.000000Z",
+                  },
+                ],
+                rowCount: 1,
+              };
+            if (/FROM messages m WHERE m\.deleted_at IS NULL AND m\.content IS NOT NULL/.test(sql))
+              return {
+                rows: [{ id: original.id, guildId: config.guildId, channelId: config.channelId }],
+                rowCount: 1,
+              };
+            return { rows: [], rowCount: 0 };
+          },
+        };
+        const botConfig = { ...config, botId: "444444444444444444" };
+        const read = archiveTool(store, discord, botConfig, archive);
+        const queue = historyQueue(store, {}, config, directory, async () => {}, null);
+
+        await hold();
+        await assert.rejects(read({ messageId: preBoot.id }), /recovery/i);
+        assert.deepEqual(calls, [], "held must refuse before any archive query");
+
+        await recovery.releaseRecovery(db, {
+          expectedRevision: 1,
+          reason: "Fictional archive read release",
+          frontiers: { [config.channelId]: frontier },
+          confirmLiveOnly: true,
+        });
+        const before = await snapshot();
+
+        // (a) The archive read path succeeds under live-only.
+        const result = await read({ messageId: preBoot.id });
+        assert.deepEqual(
+          result.sources.map((source) => source.id),
+          [preBoot.id],
+        );
+        assert.equal(result.recovery.phase, "live-only");
+        assert.equal(result.recovery.persisted, false);
+        assert(calls.length > 0, "the read must actually reach the archive");
+
+        // The discussions proxy passes the same permitted read-only kind.
+        const discussions = archiveDiscussions(store, discord, botConfig, archive);
+        const discussion = await discussions.readDiscussion({ anchorId: preBoot.id });
+        assert.equal(discussion.anchorId, preBoot.id);
+        assert.deepEqual(
+          discussion.sources.map((source) => source.id),
+          [preBoot.id],
+        );
+        assert.equal(discussion.recovery.persisted, false);
+
+        // Only the read-only kind widened: every intake/mutation kind stays denied.
+        for (const kind of ["history", "operator", "reset", "migrate", "edit", "remove"])
+          await assert.rejects(store.recovery(kind), /recovery/i);
+        assert.equal(
+          (await store.recovery("archive")).phase,
+          "live-only",
+          "archive must be the one kind live-only permits",
+        );
+
+        // The archive-safe source reads one exact original on a released route,
+        // refuses protected ids, and never exposes paging or write callbacks.
+        let reads = 0;
+        const safe = recovery.recoveryArchiveSource(
+          db,
+          new Proxy(
+            {},
+            {
+              get: (_target, key) =>
+                key === "serverTime"
+                  ? () => 1
+                  : async () => {
+                      reads++;
+                      return { id: preBoot.id };
+                    },
+            },
+          ),
+        );
+        assert.equal(typeof safe.get, "function");
+        // Source `a` is protected by this hold, so archive recall refuses it.
+        await assert.rejects(safe.get(config.channelId, a), /archive recall/i);
+        // Another released route is not a released id: the frontier route list is
+        // explicit, so an unlisted channel is refused too.
+        await assert.rejects(safe.get("222222222222222223", preBoot.id), /archive recall/i);
+        assert.equal((await safe.get(config.channelId, preBoot.id)).id, preBoot.id);
+        assert.equal(reads, 1);
+        for (const key of ["recent", "around", "after", "send", "react", "typing", "me"])
+          assert.equal(safe[key], undefined, `${key} must not be reachable from archive recall`);
+
+        // (b) Derivation stays disabled and no pre-boot row becomes work: the
+        // queue refuses before any archive read, and the ordinary work selector
+        // filters the pre-frontier sources out.
+        assert.equal(
+          recovery.historyDerivationDisposition(await recovery.readRecoveryPolicy(db)),
+          "recovery-disabled",
+        );
+        const beforeQueue = calls.length;
+        await assert.rejects(queue.next(), /recovery/i);
+        assert.equal(calls.length, beforeQueue, "derivation must not reach the archive");
+        assert.equal(await store.next(), null);
+        assert.equal(
+          (
+            await db.query(
+              "SELECT count(*)::int n FROM pilot_work WHERE history_episode IS NOT NULL",
+            )
+          ).rows[0].n,
+          0,
+        );
+
+        // Reads persisted nothing: no archive original was enrolled or invalidated,
+        // so a live reply cannot cite it as memory evidence either. The pilot row
+        // still holds the fixture text, not the archive-only content.
+        assert.deepEqual(await snapshot(), before);
+        assert.equal(
+          (
+            await db.query("SELECT source->>'content' AS content FROM pilot_sources WHERE id=$1", [
+              preBoot.id,
+            ])
+          ).rows[0].content,
+          "Fictional recovery fixture",
+        );
+      } finally {
+        await rm(directory, { recursive: true, force: true });
       }
     }),
 );
@@ -584,14 +786,85 @@ test(
       ])
         await assert.rejects(fn, /recovery/i);
       const current = { ...value("555555555555555551"), replyTo: a };
-      await assert.rejects(
-        store.isAddressed(current, "444444444444444444", async () => {
+      // The live message itself is post-frontier and legitimate. Its parent is a
+      // protected, pre-frontier original, so the lookup yields no parent context
+      // instead of aborting: nothing is read and the transport callback never runs.
+      assert.equal(
+        await store.isAddressed(current, "444444444444444444", async () => {
           callbacks++;
           return null;
         }),
-        /recovery/i,
+        false,
       );
       assert.equal(callbacks, 0);
+    }),
+);
+
+test(
+  "live-only ingests a post-frontier reply to a pre-frontier parent without reading or keeping that parent",
+  database,
+  () =>
+    fixture("prefrontier_parent", async ({ db, store, hold, snapshot }) => {
+      await hold();
+      await recovery.releaseRecovery(db, {
+        expectedRevision: 1,
+        reason: "Fictional pre-frontier parent review",
+        frontiers: { [config.channelId]: frontier },
+        confirmLiveOnly: true,
+      });
+      // An unseeded id strictly below the released frontier: the shape of the
+      // reply parent in the #economics-markets exchange that aborted the poll.
+      const parent = "555555555555555400";
+      const reply = { ...value("555555555555555551", "Fictional live reply"), replyTo: parent };
+      const before = await snapshot();
+      assert.equal(
+        (await db.query("SELECT count(*)::int n FROM pilot_sources WHERE id=$1", [parent])).rows[0]
+          .n,
+        0,
+      );
+      // The transport would refuse this exact read. Record whether it is even asked:
+      // the policy decides first, so a pre-frontier parent is never fetched.
+      const reads = [];
+      const readParent = async (channelId, id) => {
+        reads.push([channelId, id]);
+        return { id, channel_id: channelId, author: { id: "444444444444444444" } };
+      };
+      assert.equal(await store.isAddressed(reply, "444444444444444444", readParent), false);
+      assert.deepEqual(reads, []);
+      // The live message itself is still ingested as ordinary pending work.
+      await store.ingest(reply, false);
+      assert.equal(
+        (await db.query("SELECT source->>'replyTo' p FROM pilot_sources WHERE id=$1", [reply.id]))
+          .rows[0].p,
+        parent,
+      );
+      // The pre-frontier parent was never read, so it never entered pilot state and
+      // derived no work. Only the live reply row was added.
+      assert.equal(
+        (await db.query("SELECT count(*)::int n FROM pilot_sources WHERE id=$1", [parent])).rows[0]
+          .n,
+        0,
+      );
+      assert.equal(
+        (
+          await db.query("SELECT count(*)::int n FROM pilot_work WHERE source_ids && $1::text[]", [
+            [parent],
+          ])
+        ).rows[0].n,
+        0,
+      );
+      const after = await snapshot();
+      assert.equal(after.pilot_sources.length, before.pilot_sources.length + 1);
+      // The gate on the message itself, and the policy revision, are unchanged.
+      assert.equal(
+        (await db.query("SELECT policy FROM pilot_recovery_policy")).rows[0].policy.phase,
+        "live-only",
+      );
+      assert.equal(
+        (await db.query("SELECT policy FROM pilot_recovery_policy")).rows[0].policy.revision,
+        2,
+      );
+      await assert.rejects(store.ingest(value(parent, "Fictional parent intake")), /recovery/i);
     }),
 );
 
@@ -698,5 +971,80 @@ test("policy lookup errors fail before mutation or external callbacks", database
       db.query = query;
     }
     assert.deepEqual(await snapshot(), before);
+  }),
+);
+
+test("live-only commits a reply that cites pre-frontier memory evidence", database, () =>
+  fixture("prefrontier_citation", async ({ db, store, hold }) => {
+    await hold();
+    await recovery.releaseRecovery(db, {
+      expectedRevision: 1,
+      reason: "Fictional pre-frontier citation review",
+      frontiers: { [config.channelId]: frontier },
+      confirmLiveOnly: true,
+    });
+    // A live message inside the frontier, answered by a turn whose memory entry
+    // cites an older message strictly below it. This is the shape of every
+    // production reply: all live memory entries cite pre-frontier evidence.
+    const live = value("555555555555555600", "Fictional live question about fiction");
+    // The citation already exists as historical evidence in the real system.
+    // Seed it as pre-existing state, which is what production has.
+    const citation = "555555555555555100";
+    await seedHistorical(db, citation, "Fictional historical evidence");
+    await store.ingest(live, true);
+    const batch = await store.next();
+    assert.equal(batch.replyTo, live.id);
+    const memory = {
+      read: async () => ({ revision: digest("prior") }),
+      write: async () => {},
+    };
+    // The citation travels as validation evidence, exactly as usedSourceIds does.
+    const id = await store.prepare(
+      0,
+      batch,
+      { content: "Fictional new memory", expectedRevision: digest("prior") },
+      "Fictional reply citing older evidence",
+      [citation],
+    );
+    assert.deepEqual((await store.finish(memory)).completed, [id]);
+    assert.equal(
+      (await db.query("SELECT status FROM pilot_work WHERE id=$1", [id])).rows[0].status,
+      "done",
+    );
+    // The citation was never enrolled as work and stays out of source_ids.
+    assert.equal(
+      (
+        await db.query("SELECT count(*)::int n FROM pilot_work WHERE source_ids && $1::text[]", [
+          [citation],
+        ])
+      ).rows[0].n,
+      0,
+    );
+    // The frontier still governs what is actually replied to.
+    await assert.rejects(store.ingest(value(citation, "Fictional intake")), /recovery/i);
+  }),
+);
+
+test("live-only still refuses work whose own source is outside the frontier", database, () =>
+  fixture("prefrontier_source_ids", async ({ db, store, hold }) => {
+    await hold();
+    await recovery.releaseRecovery(db, {
+      expectedRevision: 1,
+      reason: "Fictional outside-frontier source review",
+      frontiers: { [config.channelId]: frontier },
+      confirmLiveOnly: true,
+    });
+    // source_ids is still gated: a prepared work row naming a source that the
+    // frontier does not admit must not commit. Relaxing citations must not
+    // relax enrolment.
+    const outside = "555555555555555120";
+    await seedHistorical(db, outside, "Fictional out-of-frontier source");
+    await assert.rejects(
+      db.query(
+        "INSERT INTO pilot_work(id,epoch,source_ids,candidate,status) VALUES('fictional-outside',0,$1,$2,'prepared')",
+        [[outside], { content: "fictional candidate", expectedRevision: digest("prior") }],
+      ),
+      /recovery/i,
+    );
   }),
 );

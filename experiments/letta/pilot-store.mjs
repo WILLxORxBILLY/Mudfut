@@ -515,13 +515,17 @@ export async function pilotStore(db, config, { discoverySince } = {}) {
       if (recoveryPolicy) {
         if (work.history_episode || !work.source_ids.length || work.candidate?.operatorRequestId)
           continue;
+        // Citations are not enrolments. Only `source_ids` (the messages being
+        // answered) must sit inside the frontier; `validation_ids` are the
+        // pre-frontier evidence a reply quotes, and refusing them here silently
+        // deferred every memory-bearing reply to a history failure path.
         const selected = (
           await db.query("SELECT source FROM pilot_sources WHERE id=ANY($1::text[])", [
-            work.source_ids.concat(work.validation_ids),
+            work.source_ids,
           ])
         ).rows;
         if (
-          selected.length !== new Set([...work.source_ids, ...work.validation_ids]).size ||
+          selected.length !== new Set(work.source_ids).size ||
           selected.some((row) => !recoverySourceAllowed(recoveryPolicy, row.source))
         )
           continue;
@@ -880,11 +884,17 @@ export async function pilotStore(db, config, { discoverySince } = {}) {
           }
           if (["ingest", "isAddressed"].includes(key)) await assertRecovery(db, "live", args[0]);
           if (key === "isAddressed" && args[2]) {
+            // A reply parent is optional context, not a work item. The gate above
+            // already decided the live message itself is inside the frontier, so a
+            // parent that is protected, pre-frontier, or on a route whose frontier
+            // cannot be resolved must not abort the cycle that is serving every
+            // other message. Decide from the policy *before* any transport call, so
+            // a refused parent is never read, ingested or persisted: it simply
+            // yields no parent context, exactly like a deleted message. Anything
+            // the policy cannot place inside the frontier stays fail-closed (skip).
             const read = args[2];
-            args[2] = async (channelId, id) => {
-              await assertRecovery(db, "live", { id, channelId });
-              return read(channelId, id);
-            };
+            args[2] = async (channelId, id) =>
+              recoverySourceAllowed(policy, { id, channelId }) ? read(channelId, id) : null;
           }
           if (key === "ingest") {
             const previous = (
@@ -908,7 +918,13 @@ export async function pilotStore(db, config, { discoverySince } = {}) {
               !batch.rows.length
             )
               await assertRecovery(db, "history");
-            const ids = [...batch.rows.map((row) => row.id), ...(args[4] ?? [])];
+            // Only the sources being replied to are work items that the frontier
+            // governs. `validation_ids` are citations the reply merely references:
+            // they are read-only evidence, they are never enrolled, derived, or
+            // sent, and every live memory entry cites pre-frontier sources by
+            // design. Gating them made any reply that remembered anything fail as
+            // a replay attempt. See docs/RECOVERY.md "Reply evidence".
+            const ids = batch.rows.map((row) => row.id);
             const sources = (
               await db.query("SELECT source FROM pilot_sources WHERE id=ANY($1::text[])", [ids])
             ).rows;

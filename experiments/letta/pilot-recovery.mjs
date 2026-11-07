@@ -71,12 +71,31 @@ export function recoverySourceAllowed(policy, source) {
     BigInt(source.id) > BigInt(frontier)
   );
 }
+// Kinds that stay denied for the whole live-only phase. "archive" is deliberately
+// absent: it is a bounded read-only query against the separate archive role that
+// neither enrolls historical work nor derives or replays memory, so inspection
+// stays possible while every intake/derivation path above remains closed.
+export const liveOnlyDeniedKinds = ["history", "operator", "reset", "migrate", "edit", "remove"];
+export const archiveReadKind = "archive";
+// Whether the worker may hold a read-only archive connection at all, and which
+// gate kind the per-call preflight uses. Held keeps the archive unconstructed;
+// live-only opens it for the read-only kind only.
+export function archiveAccess(policy) {
+  if (!policy) return { readable: true, kind: "history" };
+  return policy.phase === "live-only"
+    ? { readable: true, kind: archiveReadKind }
+    : { readable: false, kind: archiveReadKind };
+}
+// Historical derivation/replay stays disabled for the whole life of any policy,
+// live-only included: a readable archive is not permission to derive remembered
+// state. Exported so the runtime wiring and its tests share one decision.
+export const historyDerivationDisposition = (policy) => (policy ? "recovery-disabled" : null);
 export async function assertRecovery(db, kind = "live", source) {
   const policy = await readRecoveryPolicy(db);
   if (!policy) return null;
   if (!(await ownsPilot(db))) throw fail("session ownership required");
   if (policy.phase === "held") throw fail("held; no runtime side effects or external operations");
-  if (["history", "operator", "reset", "migrate", "edit", "remove"].includes(kind))
+  if (liveOnlyDeniedKinds.includes(kind))
     throw fail(`${kind} remains disabled in live-only recovery`);
   if (source && !recoverySourceAllowed(policy, source))
     throw fail("source is protected or outside a released live frontier");
@@ -101,6 +120,19 @@ export function recoveryEligibilitySql(parameter, alias = "s") {
 
 // All real transport calls share this preflight, including callbacks retained by
 // typing/acknowledgment or a model tool. A request already in flight is not recalled.
+// An exact original may be read for archive recall even when it predates the live
+// frontier. This is read-only: sends, reactions, page reads and every ingest or
+// derivation path keep the frontier rule, so nothing can be enrolled from it.
+export function archiveRecallReadAllowed(policy, channelId, id) {
+  return Boolean(
+    policy &&
+    policy.phase === "live-only" &&
+    snowflake(channelId) &&
+    snowflake(id) &&
+    Boolean(policy.frontiers[channelId]) &&
+    !policy.protectedSourceIds.includes(id),
+  );
+}
 export function recoveryTransport(db, transport) {
   return new Proxy(transport, {
     get(target, key) {
@@ -131,13 +163,36 @@ export function recoveryTransport(db, transport) {
   });
 }
 
-export function recoveryArchive(db, archive) {
+// Archive recall needs one exact original even when it predates the live frontier.
+// This is a separate, read-only surface: only `get` and `serverTime` pass, the
+// channel must be a released route and the ID unprotected, and the live transport
+// keeps its own stricter preflight. Nothing read here is ingested or derived.
+export function recoveryArchiveSource(db, transport) {
+  return new Proxy(transport, {
+    get(target, key) {
+      const fn = target[key];
+      if (key === "serverTime") return typeof fn === "function" ? fn.bind(target) : fn;
+      if (key !== "get" || typeof fn !== "function") return undefined;
+      return async (channelId, id) => {
+        await claimPilotOwnership(db);
+        const policy = await assertRecovery(db, archiveReadKind);
+        if (policy && !archiveRecallReadAllowed(policy, channelId, id))
+          throw fail("archive recall is limited to unprotected ids on released routes");
+        return fn.call(target, channelId, id);
+      };
+    },
+  });
+}
+
+// Read-only archive access passes "archive" explicitly; the default stays the
+// stricter historical kind so an unmarked call site cannot widen the gate.
+export function recoveryArchive(db, archive, kind = "history") {
   return new Proxy(archive, {
     get(target, key) {
       const fn = target[key];
       return typeof fn !== "function"
         ? fn
-        : (...args) => ownedExternal(db, "history", () => fn.apply(target, args));
+        : (...args) => ownedExternal(db, kind, () => fn.apply(target, args));
     },
   });
 }
@@ -196,7 +251,15 @@ BEGIN
     ELSE
       IF item->>'history_episode' IS NOT NULL OR (item->'candidate') ? 'operatorRequestId' OR jsonb_array_length(item->'source_ids')=0 THEN
         RAISE EXCEPTION 'Recovery gate prevents historical/operator work'; END IF;
-      SELECT array_agg(value) INTO ids FROM jsonb_array_elements_text((item->'source_ids') || coalesce(item->'validation_ids','[]'));
+      -- Enrolment is governed by source_ids only. validation_ids are citations a
+      -- reply quotes; they are never enrolled, derived or sent, and gating them
+      -- refused every reply that cited pre-frontier memory. A citation must still
+      -- name a source that exists, but it is not required to be inside the frontier.
+      SELECT array_agg(value) INTO ids FROM jsonb_array_elements_text(item->'source_ids');
+      FOREACH sid IN ARRAY coalesce(ARRAY(SELECT value FROM jsonb_array_elements_text(coalesce(item->'validation_ids','[]'))),'{}') LOOP
+        IF NOT EXISTS(SELECT 1 FROM pilot_sources WHERE id=sid) THEN
+          RAISE EXCEPTION 'Recovery gate protects this source'; END IF;
+      END LOOP;
     END IF;
     FOREACH sid IN ARRAY ids LOOP
       IF TG_TABLE_NAME<>'pilot_sources' THEN SELECT source INTO s FROM pilot_sources WHERE id=sid; END IF;
