@@ -11,6 +11,9 @@ import {
   recoveryTransport,
   recoveryArchive,
   assertRecovery,
+  archiveAccess,
+  recoveryArchiveSource,
+  historyDerivationDisposition,
 } from "./pilot-recovery.mjs";
 import {
   discordTransport,
@@ -142,8 +145,9 @@ try {
   } else {
     // Ownership and the persisted policy are checked before even identity/auth
     // callbacks, not just before constructing a schema-writing store.
+    const transport = discordTransport((await privateFile("discord-token")).trim(), record);
     const discord = await ownedExternal(db, "startup", async () =>
-      recoveryTransport(db, discordTransport((await privateFile("discord-token")).trim(), record)),
+      recoveryTransport(db, transport),
     );
     const bot = await discord.me();
     const store = await pilotStore(db, config, {
@@ -225,7 +229,11 @@ try {
     } catch (error) {
       if (error.code !== "ENOENT") throw error;
     }
-    if (historyCredentials && !recoveryPolicy) {
+    // A live-only release keeps historical *intake* closed but still permits the
+    // bounded read-only archive role, so operators can read retained discussion.
+    // Under held, no archive client is constructed at all.
+    const archive = archiveAccess(recoveryPolicy);
+    if (historyCredentials && archive.readable) {
       const credentials = historyCredentials;
       if (credentials.host !== "127.0.0.1" || credentials.user !== "mudfut_history_reader")
         throw new Error("History requires the separate local read-only role");
@@ -245,6 +253,9 @@ try {
             },
           },
         ),
+        // Read-only archive calls pass "archive"; derivation/episode work still
+        // passes "history" and remains denied in live-only.
+        archive.kind,
       );
       await optionalArchive(() => history.connect());
     }
@@ -253,12 +264,15 @@ try {
     let readKnowledgeView = async () => {
       throw new Error("Community knowledge views are not ready");
     };
+    // Archive reads of pre-frontier originals use a narrower, read-only surface:
+    // exact `get`/`serverTime` on released, unprotected routes, and nothing else.
+    const archiveSource = recoveryArchiveSource(db, transport);
     model = await ownedExternal(db, "model", () =>
-      pilotModel(archiveTool(store, discord, { ...config, botId: bot.id }, history), {
+      pilotModel(archiveTool(store, archiveSource, { ...config, botId: bot.id }, history), {
         memoryOnly: mode === "recall-proof",
         botId: bot.id,
         discussions: history
-          ? archiveDiscussions(store, discord, { ...config, botId: bot.id }, history, {
+          ? archiveDiscussions(store, archiveSource, { ...config, botId: bot.id }, history, {
               checkpoint: async () => activeCheckpoint?.(),
             })
           : undefined,
@@ -379,7 +393,9 @@ try {
       });
     };
     const recoverHistoryDerivation = async () => {
-      if (await readRecoveryPolicy(db)) return { disposition: "recovery-disabled" };
+      // Any persisted policy, live-only included, keeps historical derivation off.
+      const disabled = historyDerivationDisposition(await readRecoveryPolicy(db));
+      if (disabled) return { disposition: disabled };
       if (!history || !historyCredentials) return { disposition: "idle" };
       const shouldYield = async () => {
         await checkpoint();
@@ -562,7 +578,9 @@ try {
           !batch &&
           mode !== "recall-proof" &&
           !history?.paused &&
-          !(await readRecoveryPolicy(db))
+          // Any policy, live-only included, keeps historical admission shut even
+          // though the archive client is constructed for read-only recall.
+          !historyDerivationDisposition(await readRecoveryPolicy(db))
         ) {
           phase = "history_load";
           batch = await timing.measure("history_load", () => learning.next());
@@ -732,14 +750,29 @@ try {
 } catch (error) {
   if (timing) await record(timing.event);
   const failure = connectionFailure ?? error;
+  // Exit 78 latches the pilot into `held` on a *single* event, so it must be
+  // reserved for a genuine recovery refusal — the one thing that should never be
+  // retried silently. Every other prepare-phase error ("Source revision changed
+  // during generation", "Historical projection sources changed before memory
+  // commit", a dropped pool connection) is transient operational noise, and
+  // treating it as terminal meant one database blip turned the bot permanently
+  // silent. Those now retry with backoff and are counted by the breaker.
+  const recoveryRefusal =
+    failure?.code === "PILOT_RECOVERY_GATE" || /^Recovery gate:/.test(safeError(failure) ?? "");
   const retryable = retryableFailure({
     message: safeError(failure),
     status: failure.status,
     code: failure.code,
     cause: failure.cause,
-    retryable: phase === "model",
+    retryable: phase === "model" || (phase === "prepare" && !recoveryRefusal),
   });
-  await record({ type: "failure", phase, retryable, error: safeError(failure) });
+  await record({
+    type: "failure",
+    phase,
+    retryable,
+    recoveryRefusal,
+    error: safeError(failure),
+  });
   console.error(safeError(failure));
   process.exitCode = stopping && !connectionFailure ? 0 : retryable ? 75 : 78;
 } finally {
@@ -762,4 +795,10 @@ try {
   if (model) await rm(join(state, "pilot-process.json"), { force: true });
   // An IPC disconnect listener keeps Node alive even after all clients close.
   if (process.connected) process.disconnect();
+  // A terminal worker must not linger on an unresolved handle — the SDK child, a
+  // pool socket, or the IPC channel — until the supervisor's 240s watchdog
+  // SIGKILLs it. That is pure dead time: the outcome is already recorded. `unref`
+  // means the timer never keeps the loop alive on its own, so a clean drain still
+  // exits naturally; it only forces the exit when something else is holding it.
+  setTimeout(() => process.exit(process.exitCode ?? 0), 2000).unref();
 }
