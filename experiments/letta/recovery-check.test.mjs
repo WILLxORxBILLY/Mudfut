@@ -329,3 +329,44 @@ if(phase==='prepare'){
     }
   },
 );
+
+test("a prepare-phase recovery refusal exits 78 instead of a signature the watchdog must kill", async () => {
+  // The worker is a top-level script (it reads private files and connects before
+  // any work), so its exit mapping is asserted at the source, the way
+  // release-preflight checks its own entrypoint. Every pattern below is exact: a
+  // revert to treating a refusal as a transient prepare failure fails this test.
+  const source = await readFile(new URL("./pilot.mjs", import.meta.url), "utf8");
+  const refusal =
+    /const recoveryRefusal =\s*\n\s*failure\?\.code === "PILOT_RECOVERY_GATE" \|\| \/\^Recovery gate:\/\.test\(safeError\(failure\) \?\? ""\);/;
+  assert.match(source, refusal, "a genuine gate refusal must be identified as one");
+  assert.match(
+    source,
+    /retryable: phase === "model" \|\| \(phase === "prepare" && !recoveryRefusal\),/,
+    "a prepare-phase refusal must not be classified retryable, so 78 stays reserved for it",
+  );
+  assert.match(
+    source,
+    /process\.exitCode = stopping && !connectionFailure \? 0 : retryable \? 75 : 78;/,
+    "the worker must exit 78 (not 75) for a non-retryable refusal",
+  );
+  // The hang fix: a terminal worker forces its own exit instead of lingering on an
+  // unresolved handle until the supervisor's 240s watchdog signals it.
+  assert.match(
+    source,
+    /setTimeout\(\(\) => process\.exit\(process\.exitCode \?\? 0\), 2000\)\.unref\(\);/,
+    "a finished worker must exit itself rather than wait to be killed",
+  );
+
+  // The two exit signatures, resolved by the supervisor's real decision code: the
+  // refusal holds after one event, while the watchdog's SIGKILL is a signal the
+  // breaker does not hold, which is what let six kills repeat an hour apart.
+  const refused = recoveryDecision({ failures: [] }, { code: 78, signal: null }, 1000);
+  assert.equal(refused.held, true, "the supervisor must hold on the refusal");
+  assert.equal(refused.nextAttemptAt, null, "a held supervisor schedules no restart");
+  const killed = recoveryDecision({ failures: [] }, { code: null, signal: "SIGKILL" }, 1000);
+  assert.equal(killed.held, false, "a watchdog kill is not a hold");
+  assert.equal(typeof killed.nextAttemptAt, "number");
+  // Prepare-phase noise keeps exiting 75 and stays retryable, so one db blip is
+  // not a terminal hold. The distinction is the refusal predicate above.
+  assert.equal(recoveryDecision({ failures: [] }, { code: 75, signal: null }, 1000).held, false);
+});

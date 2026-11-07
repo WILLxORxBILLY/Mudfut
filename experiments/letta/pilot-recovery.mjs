@@ -147,7 +147,15 @@ export function recoveryTransport(db, transport) {
             throw fail("historical/default-page reads disabled");
           if (["get", "react", "send"].includes(key)) {
             const id = key === "send" ? args[1]?.message_reference?.message_id : args[1];
-            await assertRecovery(db, "live", { channelId: args[0], id });
+            // An exact original may be referenced even when it predates the live
+            // frontier, on the same terms as read-only archive recall: the flag
+            // itself still requires a live-only policy, a released route, a
+            // snowflake id and an unprotected source, so a protected id, an
+            // unreleased route or any other phase keeps the strict per-id
+            // preflight below and is refused exactly as before. Only the
+            // frontier comparison is relaxed, for the parent a live reply cites.
+            if (!archiveRecallReadAllowed(p, args[0], id))
+              await assertRecovery(db, "live", { channelId: args[0], id });
           } else if (["after", "typing", "channel"].includes(key)) {
             const bound = p.frontiers[args[0]];
             if (
