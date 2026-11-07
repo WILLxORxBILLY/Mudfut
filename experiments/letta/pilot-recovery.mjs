@@ -147,7 +147,11 @@ export function recoveryTransport(db, transport) {
             throw fail("historical/default-page reads disabled");
           if (["get", "react", "send"].includes(key)) {
             const id = key === "send" ? args[1]?.message_reference?.message_id : args[1];
-            await assertRecovery(db, "live", { channelId: args[0], id });
+            // An exact original on a released route may be read or replied to even
+            // when it predates the live frontier: the archive-recall exemption keeps
+            // it unprotected-only. The overall live gate above still applies.
+            if (!archiveRecallReadAllowed(p, args[0], id))
+              await assertRecovery(db, "live", { channelId: args[0], id });
           } else if (["after", "typing", "channel"].includes(key)) {
             const bound = p.frontiers[args[0]];
             if (

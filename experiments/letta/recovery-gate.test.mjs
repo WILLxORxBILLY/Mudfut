@@ -801,6 +801,83 @@ test(
 );
 
 test(
+  "live-only exempts an unprotected pre-frontier original from the per-id transport gate only",
+  database,
+  () =>
+    fixture("archive_recall_transport", async ({ db, hold }) => {
+      await hold();
+      const calls = [];
+      const transport = recovery.recoveryTransport(
+        db,
+        new Proxy(
+          {},
+          {
+            get:
+              (target, key) =>
+              async (...args) => {
+                calls.push([key, ...args.slice(0, 2)]);
+                return [];
+              },
+          },
+        ),
+      );
+      // Pre-frontier and unprotected: the exact original an archive recall quotes.
+      const recalled = "555555555555555400";
+      // Released route, unprotected, above the frontier: ordinary live behavior.
+      const live = "555555555555555551";
+      // The exemption narrows only the per-id check; the overall live gate still
+      // refuses first, so a held policy permits nothing even for this id.
+      await assert.rejects(transport.get(config.channelId, recalled), /recovery/i);
+      await assert.rejects(
+        transport.send(config.channelId, { message_reference: { message_id: recalled } }),
+        /recovery/i,
+      );
+      assert.deepEqual(calls, []);
+      await recovery.releaseRecovery(db, {
+        expectedRevision: 1,
+        reason: "Fictional archive recall transport review",
+        frontiers: { [config.channelId]: frontier },
+        confirmLiveOnly: true,
+      });
+      assert.ok(
+        recovery.archiveRecallReadAllowed(
+          await recovery.readRecoveryPolicy(db),
+          config.channelId,
+          recalled,
+        ),
+      );
+      assert.ok(BigInt(recalled) < BigInt(frontier));
+      await transport.get(config.channelId, recalled);
+      await transport.react(config.channelId, recalled, "fixture");
+      await transport.send(config.channelId, { message_reference: { message_id: recalled } });
+      await transport.get(config.channelId, live);
+      await transport.send(config.channelId, { message_reference: { message_id: live } });
+      assert.deepEqual(calls, [
+        ["get", config.channelId, recalled],
+        ["react", config.channelId, recalled],
+        ["send", config.channelId, { message_reference: { message_id: recalled } }],
+        ["get", config.channelId, live],
+        ["send", config.channelId, { message_reference: { message_id: live } }],
+      ]);
+      // The exemption is per-id and narrow. A protected pre-frontier original is
+      // still refused on every one of the three calls, as before the change.
+      for (const fn of [
+        () => transport.get(config.channelId, a),
+        () => transport.react(config.channelId, a, "fixture"),
+        () => transport.send(config.channelId, { message_reference: { message_id: a } }),
+        // A released-route read of an id on an unreleased route is still refused.
+        () => transport.get("222222222222222223", recalled),
+        () => transport.send("222222222222222223", { message_reference: { message_id: recalled } }),
+        // A send with no reply reference keeps its pre-existing refusal.
+        () => transport.send(config.channelId, { content: "Fictional unreferenced reply" }),
+        () => transport.get(config.channelId, "not-a-snowflake"),
+      ])
+        await assert.rejects(fn, /recovery/i);
+      assert.equal(calls.length, 5);
+    }),
+);
+
+test(
   "live-only ingests a post-frontier reply to a pre-frontier parent without reading or keeping that parent",
   database,
   () =>
@@ -1048,3 +1125,127 @@ test("live-only still refuses work whose own source is outside the frontier", da
     );
   }),
 );
+
+// The archive-recall exemption is a narrow read path, not a widening of the gate. It
+// applies only to an exact, unprotected original on a route that has a released
+// frontier while the policy is live-only. Every other shape keeps the pre-existing
+// refusal, and page reads stay closed regardless of the exemption.
+function stubPolicyDb(stored) {
+  return {
+    async query(sql) {
+      if (/to_regclass/.test(sql))
+        return { rows: [{ name: stored ? "pilot_recovery_policy" : null }] };
+      if (/FROM pilot_recovery_policy/.test(sql)) return { rows: [{ policy: stored }] };
+      if (/FROM pg_locks/.test(sql)) return { rows: [{ owned: true }] };
+      if (/pg_try_advisory_lock/.test(sql)) return { rows: [{ acquired: true }] };
+      throw new Error(`Unexpected recovery query: ${sql}`);
+    },
+  };
+}
+
+test("the archive-recall exemption never widens the live gate", async () => {
+  assert.ok(recovery, "pilot-recovery.mjs must exist for the transport preflight");
+  const channel = config.channelId;
+  const unreleased = "222222222222222299";
+  const original = "555555555555555001"; // Pre-frontier, unprotected: the recall target.
+  const liveOnly = {
+    version: 1,
+    phase: "live-only",
+    revision: 2,
+    baseline: "a".repeat(64),
+    protectedSourceIds: [a],
+    frontiers: { [channel]: frontier },
+    reason: "Fictional live-only qualification",
+  };
+  const heldPolicy = { ...liveOnly, phase: "held", revision: 3 };
+
+  // The predicate alone decides the exemption, so each refusal must be false here.
+  assert.equal(recovery.archiveRecallReadAllowed(liveOnly, channel, original), true);
+  assert.equal(recovery.archiveRecallReadAllowed(liveOnly, channel, a), false);
+  assert.equal(recovery.archiveRecallReadAllowed(liveOnly, unreleased, original), false);
+  assert.equal(recovery.archiveRecallReadAllowed(heldPolicy, channel, original), false);
+  assert.equal(recovery.archiveRecallReadAllowed(liveOnly, channel, undefined), false);
+  assert.equal(recovery.archiveRecallReadAllowed(null, channel, original), false);
+
+  const guarded = (stored) => {
+    const calls = [];
+    const note =
+      (key) =>
+      async (...args) => {
+        calls.push([key, ...args]);
+        return key === "recent" || key === "after" || key === "around" ? [] : { id: args[1] };
+      };
+    return {
+      calls,
+      transport: recovery.recoveryTransport(stubPolicyDb(stored), {
+        get: note("get"),
+        recent: note("recent"),
+        around: note("around"),
+        after: note("after"),
+        react: note("react"),
+        send: note("send"),
+        typing: note("typing"),
+        channel: note("channel"),
+      }),
+    };
+  };
+
+  // Three shapes the exemption must not reach: each still refuses at the gate and
+  // never invokes the transport callback.
+  for (const [label, stored, args, refusal] of [
+    [
+      "a protected original",
+      liveOnly,
+      [channel, a],
+      /protected or outside a released live frontier/,
+    ],
+    [
+      "an original on a route with no released frontier",
+      liveOnly,
+      [unreleased, original],
+      /protected or outside a released live frontier/,
+    ],
+    ["a non-live-only phase", heldPolicy, [channel, original], /held; no runtime side effects/],
+  ]) {
+    const subject = guarded(stored);
+    await assert.rejects(() => subject.transport.get(...args), refusal, label);
+    assert.deepEqual(subject.calls, [], `${label} must not reach the transport`);
+  }
+
+  // The permitted shape: an exact original below the frontier, unprotected.
+  const permitted = guarded(liveOnly);
+  assert.deepEqual(await permitted.transport.get(channel, original), { id: original });
+  assert.deepEqual(permitted.calls, [["get", channel, original]]);
+
+  // A reply carries its parent through message_reference; only an exact permitted
+  // reference is exempt, so an unreferenced or protected send still refuses.
+  const reply = { message_reference: { message_id: original } };
+  const replying = guarded(liveOnly);
+  await replying.transport.send(channel, reply);
+  assert.deepEqual(replying.calls, [["send", channel, reply]]);
+  const unreferenced = guarded(liveOnly);
+  await assert.rejects(() => unreferenced.transport.send(channel, {}), /Recovery gate/);
+  assert.deepEqual(unreferenced.calls, []);
+  const protectedReply = guarded(liveOnly);
+  await assert.rejects(
+    () => protectedReply.transport.send(channel, { message_reference: { message_id: a } }),
+    /protected or outside a released live frontier/,
+  );
+  assert.deepEqual(protectedReply.calls, []);
+
+  // Page reads are untouched: the exemption never opens a historical window.
+  for (const [key, args, refusal] of [
+    ["recent", [channel], /historical\/default-page reads disabled/],
+    ["around", [channel], /historical\/default-page reads disabled/],
+    ["after", [channel, original], /route\/frontier not released/],
+  ]) {
+    const subject = guarded(liveOnly);
+    await assert.rejects(() => subject.transport[key](...args), refusal);
+    assert.deepEqual(subject.calls, []);
+  }
+
+  // No policy is ordinary mode, which the gate leaves alone.
+  const ordinary = guarded(null);
+  await ordinary.transport.get(channel, a);
+  assert.deepEqual(ordinary.calls, [["get", channel, a]]);
+});
