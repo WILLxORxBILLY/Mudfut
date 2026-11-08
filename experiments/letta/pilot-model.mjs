@@ -207,7 +207,9 @@ export async function pilotModel(
                 const result = await timing.measure("tool:automatic_gap_browse", () =>
                   discussions.browseArchive(input),
                 );
-                registerSources(result.sources);
+                // Recovery reads are reply context only; they are never enrolled
+                // as pilot sources, so they must not enter the evidence set.
+                if (!result.recovery) registerSources(result.sources);
                 await record({
                   type: "application_tool",
                   name: "browse_archive",
@@ -229,8 +231,15 @@ export async function pilotModel(
         await validateSources(ids);
         // A refreshed deletion must not leave an older supplied copy readable.
         for (const id of ids) supplied.delete(id);
-        for (const s of await sourceLookup(ids)) supplied.set(s.id, s);
-        ids.forEach((id) => used.add(id));
+        for (const s of await sourceLookup(ids)) {
+          supplied.set(s.id, s);
+          // Only a source that actually resolved is evidence this turn used. A
+          // policy-refused source is stripped by validationSources and never comes
+          // back from sourceLookup; recording the requested ids wholesale put a
+          // withheld id into usedSourceIds, so the work row claimed the reply had
+          // relied on evidence the policy deliberately kept from the model.
+          used.add(s.id);
+        }
       };
       const tool = (name, description, parameters, execute) => ({
         name,
@@ -541,10 +550,13 @@ export async function pilotModel(
           },
           async (input) => {
             const result = await search(input);
-            for (const source of result.sources) {
-              supplied.set(source.id, source);
-              used.add(source.id);
-            }
+            // Recovery reads are not persisted, so they stay reply context and
+            // never become citable memory evidence.
+            if (!result.recovery)
+              for (const source of result.sources) {
+                supplied.set(source.id, source);
+                used.add(source.id);
+              }
             return result;
           },
         ),
@@ -623,10 +635,11 @@ export async function pilotModel(
                 },
                 async (input) => {
                   const result = await discussions.browseArchive(input);
-                  for (const source of result.sources) {
-                    supplied.set(source.id, source);
-                    used.add(source.id);
-                  }
+                  if (!result.recovery)
+                    for (const source of result.sources) {
+                      supplied.set(source.id, source);
+                      used.add(source.id);
+                    }
                   return result;
                 },
               ),
@@ -641,10 +654,11 @@ export async function pilotModel(
                 },
                 async (input) => {
                   const result = await discussions.readDiscussion(input);
-                  for (const source of result.sources) {
-                    supplied.set(source.id, source);
-                    used.add(source.id);
-                  }
+                  if (!result.recovery)
+                    for (const source of result.sources) {
+                      supplied.set(source.id, source);
+                      used.add(source.id);
+                    }
                   return result;
                 },
               ),

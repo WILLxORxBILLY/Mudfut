@@ -73,21 +73,26 @@ export function archiveDiscussions(
     }
     return structuredClone(saved.state);
   };
+  // A recovery-armed read validates against Discord but persists nothing: the gate
+  // denies ingest/remove, and recall is not historical intake.
   async function fresh(rows) {
+    const policy = await assertStoreRecovery(store, "archive");
     await checkpoint();
+    // `discord` is the archive-safe source: it exposes only an exact read, so a
+    // recovery-armed recall never pages channel history.
     const originals = await currentSources(discord, rows, checkpoint);
     const result = [];
     for (const row of rows) {
       const current = originals.get(row.id);
       if (!current) {
-        await store.remove(row.id);
+        if (!policy) await store.remove(row.id);
         continue;
       }
       if (current.id !== row.id)
         throw new Error("Discord original identity differs from archive candidate");
       if (current.author?.bot || current.author?.id === config.botId) continue;
       const source = sourceRecord(current, row.guildId, row.channelId);
-      await store.ingest(source, false, false);
+      if (!policy) await store.ingest(source, false, false);
       if (store.isHeld && (await store.isHeld(source.id))) continue;
       result.push(source);
     }
@@ -438,8 +443,21 @@ export function archiveDiscussions(
       return typeof fn !== "function"
         ? fn
         : async (...args) => {
-            await assertStoreRecovery(store, "history");
-            return fn(...args);
+            // Archive/discussion reads are the read-only "archive" kind, permitted
+            // under live-only; historical intake and derivation remain "history".
+            const policy = await assertStoreRecovery(store, "archive");
+            const result = await fn(...args);
+            return !policy || !result || typeof result !== "object"
+              ? result
+              : {
+                  ...result,
+                  recovery: {
+                    phase: policy.phase,
+                    persisted: false,
+                    caveat:
+                      "Recovery is armed, so these archive originals were validated against Discord but not enrolled as pilot sources; they are reply context, not memory evidence.",
+                  },
+                };
           };
     },
   });

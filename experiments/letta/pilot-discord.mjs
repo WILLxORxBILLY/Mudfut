@@ -1,7 +1,7 @@
 import { REST, Routes } from "discord.js";
 import { sourceRecord, snowflake, digest, hasTextEvidence } from "./pilot-store.mjs";
 import { setTimeout as delay } from "node:timers/promises";
-import { assertStoreRecovery } from "./pilot-recovery.mjs";
+import { assertStoreRecovery, recoveryEligibilitySql } from "./pilot-recovery.mjs";
 
 function transientDiscordRead(error) {
   if (error?.status != null)
@@ -264,6 +264,7 @@ export async function refreshSources(
     discord,
     currentRows.map((row) => row.source),
     checkpoint,
+    { exactOnly: Boolean(await assertStoreRecovery(store)) },
   );
   for (const row of currentRows) {
     const source = row.source;
@@ -288,7 +289,12 @@ export async function refreshSources(
   }
 }
 
-export async function currentSources(discord, sources, checkpoint = async () => {}) {
+export async function currentSources(
+  discord,
+  sources,
+  checkpoint = async () => {},
+  { exactOnly = false } = {},
+) {
   const channels = new Map();
   for (const source of sources) {
     if (!channels.has(source.channelId)) channels.set(source.channelId, []);
@@ -300,7 +306,8 @@ export async function currentSources(discord, sources, checkpoint = async () => 
     // reduces scattered exact reads. Every call starts fresh; a gateway mutation
     // feed is the upgrade if bounded cold-history validation remains expensive.
     let page = [];
-    if (group.length > 1) {
+    // An archive-safe source exposes only an exact read, so page reads are optional.
+    if (!exactOnly && group.length > 1 && discord.recent) {
       await checkpoint();
       page = await discord.recent(channelId, 100);
     }
@@ -310,7 +317,7 @@ export async function currentSources(discord, sources, checkpoint = async () => 
       .sort((a, b) => (BigInt(a.id) < BigInt(b.id) ? -1 : BigInt(a.id) > BigInt(b.id) ? 1 : 0));
     // Recenter on uncovered chronology; stop on no progress rather than repeating
     // an unhelpful page. Every still-uncovered ID gets its exact read below.
-    for (let page = 0; page < 4 && missing.length > 1 && discord.around; page++) {
+    for (let page = 0; !exactOnly && page < 4 && missing.length > 1 && discord.around; page++) {
       await checkpoint();
       const older = await discord.around(channelId, missing[Math.floor(missing.length / 2)].id);
       for (const message of older) found.set(message.id, message);
@@ -322,10 +329,15 @@ export async function currentSources(discord, sources, checkpoint = async () => 
       if (found.has(source.id)) result.set(source.id, found.get(source.id));
       else {
         await checkpoint();
-        result.set(
-          source.id,
-          exactDiscordOriginal(await discord.get(channelId, source.id), source.id),
-        );
+        try {
+          result.set(
+            source.id,
+            exactDiscordOriginal(await discord.get(channelId, source.id), source.id),
+          );
+        } catch (error) {
+          if (exactOnly) continue;
+          throw error;
+        }
       }
     }
   }
@@ -334,7 +346,9 @@ export async function currentSources(discord, sources, checkpoint = async () => 
 
 export function archiveTool(store, discord, config, history) {
   return async (input) => {
-    await assertStoreRecovery(store, "history");
+    // An archive read passes the read-only "archive" kind, which a live-only
+    // recovery release still permits while every historical intake path stays shut.
+    const policy = await assertStoreRecovery(store, "archive");
     archiveInput(input);
     const parameters = [
       input.messageId ?? null,
@@ -346,6 +360,8 @@ export function archiveTool(store, discord, config, history) {
       archiveDictionary(input),
     ];
     const order = input.oldestFirst ? "ASC" : "DESC";
+    // A recovery policy restricts the cached local pool to the same released live
+    // frontier the worker uses, so this read cannot surface pre-boot cached state.
     const local = await store.db.query(
       `SELECT source FROM pilot_sources s WHERE NOT s.deleted
       AND ($1::text IS NULL OR id=$1)
@@ -354,10 +370,11 @@ export function archiveTool(store, discord, config, history) {
       AND ($4::text[] IS NULL OR source->>'channelId'=ANY($4))
       AND ($5::timestamptz IS NULL OR (source->>'createdAt')::timestamptz >= $5)
       AND ($6::timestamptz IS NULL OR (source->>'createdAt')::timestamptz < $6)
+      ${policy ? `AND ${recoveryEligibilitySql("$8")}` : ""}
       ORDER BY CASE WHEN $2::text IS NULL THEN 0 ELSE
         ts_rank_cd(to_tsvector($7::regconfig,source->>'content'),websearch_to_tsquery($7::regconfig,$2)) END DESC,
         id::numeric ${order} LIMIT 8`,
-      parameters,
+      policy ? [...parameters, policy] : parameters,
     );
     let archived = [];
     if (history) {
@@ -397,17 +414,23 @@ export function archiveTool(store, discord, config, history) {
     for (const candidate of candidates.values()) {
       // The archive is a search index: only the current Discord original can be
       // quoted. Missing originals invalidate cached dependent understanding.
+      // `discord` here is the archive-safe source: an exact read only, which a
+      // recovery policy permits for released, unprotected originals.
       const current = exactDiscordOriginal(
         await discord.get(candidate.channelId, candidate.id),
         candidate.id,
       );
       if (!current) {
-        await store.remove(candidate.id);
+        // Under a recovery policy this is a read-only session: source tombstones
+        // are a mutation the gate refuses, so the missing original is only skipped.
+        if (!policy) await store.remove(candidate.id);
         continue;
       }
       if (current.author?.bot || current.author?.id === config.botId) continue;
       const source = sourceRecord(current, candidate.guildId, candidate.channelId);
-      await store.ingest(source, false, false);
+      // Same rule for ingestion: a read passes the freshly validated Discord
+      // original through without enrolling it as pilot state.
+      if (!policy) await store.ingest(source, false, false);
       if (store.isHeld && (await store.isHeld(source.id))) continue;
       // An edited source may no longer match the selected person/channel/date.
       // Persist the edit first so dependent memory is invalidated even if omitted.
@@ -435,6 +458,18 @@ export function archiveTool(store, discord, config, history) {
     return {
       sources,
       authority: "PostgreSQL source records revalidated against Discord",
+      // Recall is not intake: say so rather than implying the archive read
+      // enrolled these originals as pilot state during recovery.
+      ...(policy
+        ? {
+            recovery: {
+              phase: policy.phase,
+              persisted: false,
+              caveat:
+                "Recovery is armed, so this read validated and returned current Discord originals without enrolling them as pilot sources or scheduling any historical work.",
+            },
+          }
+        : {}),
       ...(input.query
         ? {
             matchMode: input.matchMode ?? "lexical",
