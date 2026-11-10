@@ -2,6 +2,7 @@ import { REST, Routes } from "discord.js";
 import { sourceRecord, snowflake, digest, hasTextEvidence } from "./pilot-store.mjs";
 import { setTimeout as delay } from "node:timers/promises";
 import { assertStoreRecovery, recoveryEligibilitySql } from "./pilot-recovery.mjs";
+import { semanticArchiveMessages } from "./pilot-hybrid.mjs";
 
 function transientDiscordRead(error) {
   if (error?.status != null)
@@ -360,6 +361,18 @@ export function archiveTool(store, discord, config, history) {
       archiveDictionary(input),
     ];
     const order = input.oldestFirst ? "ASC" : "DESC";
+    const semantic =
+      input.query && history
+        ? await semanticArchiveMessages(history, {
+            guildId: config.guildId,
+            query: input.query,
+            channelIds: input.channelIds ?? null,
+            authorIds: input.authorIds ?? null,
+            after: input.after ?? null,
+            before: input.before ?? null,
+          })
+        : [];
+    const semanticIds = new Set(semantic.map((row) => row.id));
     // A recovery policy restricts the cached local pool to the same released live
     // frontier the worker uses, so this read cannot surface pre-boot cached state.
     const local = await store.db.query(
@@ -403,12 +416,13 @@ export function archiveTool(store, discord, config, history) {
         throw error;
       }
     }
-    // ponytail: interleave the independently ranked eight-result pools so cached
-    // local hits cannot bury uncached archive evidence. Upgrade to reciprocal
-    // rank fusion if more retrieval engines are added; this bounds REST reads to 16.
+    // Interleave semantic chunks, the history message index, and the local cache.
+    // Semantic hits come from the embedded chunks and must not be buried by either
+    // exact-token pool. Discord reads stay bounded by the eight returned sources.
     const candidates = new Map();
-    for (let index = 0; index < Math.max(archived.length, local.rows.length); index++)
-      for (const candidate of [archived[index], local.rows[index]?.source])
+    const pools = [semantic, archived, local.rows.map((row) => row.source)];
+    for (let index = 0; index < Math.max(...pools.map((pool) => pool.length)); index++)
+      for (const candidate of pools.map((pool) => pool[index]))
         if (candidate && !candidates.has(candidate.id)) candidates.set(candidate.id, candidate);
     const result = [];
     for (const candidate of candidates.values()) {
@@ -445,16 +459,12 @@ export function archiveTool(store, discord, config, history) {
       if (result.length === 8) break;
     }
     const matches = await archiveMatches(store.db, result, input);
-    const sources = matches
-      ? result
-          .filter(
-            (source) =>
-              matches.get(source.id)?.[
-                input.matchMode === "stemmed" ? "stemmedMatch" : "lexicalMatch"
-              ],
-          )
-          .slice(0, 8)
-      : result.slice(0, 8);
+    const tokenKey = input.matchMode === "stemmed" ? "stemmedMatch" : "lexicalMatch";
+    const sources = (
+      matches
+        ? result.filter((source) => semanticIds.has(source.id) || matches.get(source.id)?.[tokenKey])
+        : result
+    ).slice(0, 8);
     return {
       sources,
       authority: "PostgreSQL source records revalidated against Discord",
@@ -473,7 +483,15 @@ export function archiveTool(store, discord, config, history) {
       ...(input.query
         ? {
             matchMode: input.matchMode ?? "lexical",
-            matchEvidence: Object.fromEntries(sources.map(({ id }) => [id, matches.get(id)])),
+            matchEvidence: Object.fromEntries(
+              sources.map(({ id }) => [
+                id,
+                {
+                  ...(matches.get(id) ?? {}),
+                  ...(semanticIds.has(id) ? { semanticMatch: true } : {}),
+                },
+              ]),
+            ),
           }
         : {}),
       ...archiveRelevance,

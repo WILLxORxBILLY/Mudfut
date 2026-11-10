@@ -22,6 +22,7 @@ import {
   archiveTool,
   startTyping,
 } from "./pilot-discord.mjs";
+import { memberPositions } from "./pilot-profile.mjs";
 import { decodeUnderstanding } from "./pilot-memory.mjs";
 import { postgresUnderstanding } from "./pilot-memory-postgres.mjs";
 import { withLivePriority, livePriorityCheckpoint, progressPulse } from "./pilot-priority.mjs";
@@ -280,6 +281,10 @@ try {
         validateSources: (ids) =>
           refreshSources(store, discord, record, ids, activeCheckpoint, knowledge),
         knowledgeViews: (query) => readKnowledgeView(query),
+        memberProfiles: history
+          ? (request) =>
+              memberPositions(history, { ...request, guildId: config.guildId, botId: bot.id })
+          : undefined,
         memoryFactory: (legacy, { agentId }) =>
           postgresUnderstanding(memoryDb, legacy, { agentId, record, ownerDb: db }),
       }),

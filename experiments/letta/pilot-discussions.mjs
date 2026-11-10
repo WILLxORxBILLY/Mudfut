@@ -8,6 +8,7 @@ import {
   currentSources,
 } from "./pilot-discord.mjs";
 import { sourceRecord, snowflake } from "./pilot-store.mjs";
+import { semanticArchiveMessages } from "./pilot-hybrid.mjs";
 
 const filterKeys = [
   "query",
@@ -180,6 +181,18 @@ export function archiveDiscussions(
             ],
           )
         ).rows;
+        const semantic = supplied.query
+          ? await semanticArchiveMessages(history, {
+              guildId: config.guildId,
+              query: supplied.query,
+              channelIds: supplied.channelIds ?? null,
+              authorIds: supplied.authorIds ?? null,
+              after: supplied.after ?? null,
+              before: supplied.before ?? null,
+              excludeThreads: true,
+              limit,
+            })
+          : [];
         chain = {
           filters: supplied,
           limit,
@@ -192,13 +205,20 @@ export function archiveDiscussions(
             workerLifetime: true,
           },
           rows: rows.slice(0, 6 * limit),
+          semanticRows: semantic.filter((row) => row.at),
           overflow: rows.length > 6 * limit,
         };
       }
       const direction = chain.filters.oldestFirst === false ? -1 : 1;
-      const candidates = chain.rows
+      const chronological = chain.rows
         .filter((row) => !chain.last || direction * compare(tuple(row), chain.last) > 0)
         .slice(0, chain.limit);
+      const seen = new Set(chronological.map((row) => row.id));
+      const leading =
+        chain.pages === 0
+          ? (chain.semanticRows ?? []).filter((row) => row.at && !seen.has(row.id))
+          : [];
+      const candidates = [...leading, ...chronological];
       let sources = await fresh(candidates);
       const filters = chain.filters;
       sources = sources.filter(
@@ -209,15 +229,14 @@ export function archiveDiscussions(
           (!filters.before || Date.parse(source.createdAt) < Date.parse(filters.before)),
       );
       const matches = await archiveMatches(history, sources, filters);
+      const semanticIds = new Set((chain.semanticRows ?? []).map((row) => row.id));
+      const tokenKey = filters.matchMode === "stemmed" ? "stemmedMatch" : "lexicalMatch";
       if (matches)
         sources = sources.filter(
-          (source) =>
-            matches.get(source.id)?.[
-              filters.matchMode === "stemmed" ? "stemmedMatch" : "lexicalMatch"
-            ],
+          (source) => semanticIds.has(source.id) || matches.get(source.id)?.[tokenKey],
         );
 
-      const last = candidates.length ? tuple(candidates.at(-1)) : chain.last;
+      const last = chronological.length ? tuple(chronological.at(-1)) : chain.last;
       const remaining = chain.rows.filter(
         (row) => !last || direction * compare(tuple(row), last) > 0,
       ).length;
@@ -235,7 +254,15 @@ export function archiveDiscussions(
         ...(filters.query
           ? {
               matchMode: filters.matchMode ?? "lexical",
-              matchEvidence: Object.fromEntries(sources.map(({ id }) => [id, matches.get(id)])),
+              matchEvidence: Object.fromEntries(
+                sources.map(({ id }) => [
+                  id,
+                  {
+                    ...(matches.get(id) ?? {}),
+                    ...(semanticIds.has(id) ? { semanticMatch: true } : {}),
+                  },
+                ]),
+              ),
             }
           : {}),
         snapshot: chain.snapshot,
