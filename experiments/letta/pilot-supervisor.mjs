@@ -54,6 +54,7 @@ export function retryableFailure(error) {
         "ENETUNREACH",
         "EHOSTUNREACH",
         "ETIMEDOUT",
+        "ENOTFOUND",
         "EAI_AGAIN",
         "UND_ERR_CONNECT_TIMEOUT",
         "UND_ERR_SOCKET",

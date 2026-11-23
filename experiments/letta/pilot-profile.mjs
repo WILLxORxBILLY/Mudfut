@@ -146,32 +146,51 @@ export async function memberPositions(history, input) {
     };
   }
   const member = exactId ? { id: request.member, name: candidates[0]?.name ?? null } : candidates[0];
+  const summary = (
+    await history.query(
+      `SELECT count(*)::int AS n FROM v2_statements
+       WHERE guild_id = $1 AND subject_member_id = $2`,
+      [input.guildId, member.id],
+    )
+  ).rows[0] ?? { n: 0 };
   const params = [input.guildId, member.id, request.limit];
-  let topicSql = "";
-  if (request.topic) {
-    params.push(request.topic);
-    topicSql = `AND to_tsvector('english', concat_ws(' ', s.normalized_topic, s.normalized_proposition, s.exact_quote))
-      @@ websearch_to_tsquery('english', $4)`;
-  }
-  const { rows } = await history.query(
-    `SELECT s.subject_member_id AS "memberId",
-       s.normalized_topic AS topic, s.normalized_proposition AS proposition,
-       s.exact_quote AS quote, s.statement_kind::text AS kind,
-       s.source_message_id AS "messageId",
-       to_char(s.source_occurred_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS at
-     FROM v2_statements s
-     WHERE s.guild_id = $1 AND s.subject_member_id = $2
-       ${topicSql}
-     ORDER BY s.source_occurred_at DESC NULLS LAST, s.statement_id
-     LIMIT $3`,
-    params,
-  );
+  const sql = request.topic
+    ? `SELECT s.subject_member_id AS "memberId",
+         s.normalized_topic AS topic, s.normalized_proposition AS proposition,
+         s.exact_quote AS quote, s.statement_kind::text AS kind,
+         s.source_message_id AS "messageId",
+         to_char(s.source_occurred_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS at
+       FROM v2_statements s
+       WHERE s.guild_id = $1 AND s.subject_member_id = $2
+         AND to_tsvector('english', concat_ws(' ', s.normalized_topic, s.normalized_proposition, s.exact_quote))
+           @@ websearch_to_tsquery('english', $4)
+       ORDER BY s.source_occurred_at DESC NULLS LAST, s.statement_id
+       LIMIT $3`
+    : `WITH scoped AS (
+         SELECT s.normalized_topic AS topic, s.normalized_proposition AS proposition,
+           s.exact_quote AS quote, s.statement_kind::text AS kind,
+           s.source_message_id AS "messageId",
+           to_char(s.source_occurred_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS at,
+           row_number() OVER (ORDER BY s.source_occurred_at NULLS LAST, s.statement_id) AS rn,
+           count(*) OVER () AS total
+         FROM v2_statements s
+         WHERE s.guild_id = $1 AND s.subject_member_id = $2
+       )
+       SELECT $2::text AS "memberId", topic, proposition, quote, kind, "messageId", at
+       FROM scoped
+       WHERE rn = 1 OR rn = total OR rn % GREATEST(total / GREATEST($3, 1), 1) = 0
+       ORDER BY at DESC NULLS LAST
+       LIMIT $3`;
+  if (request.topic) params.push(request.topic);
+  const { rows } = await history.query(sql, params);
+  const statements = rows.map((row) => statementRow({ ...row, name: member.name, memberId: member.id }));
   return {
     scope: "member",
     member,
-    returned: rows.length,
-    truncated: rows.length === request.limit,
-    statements: rows.map((row) => statementRow({ ...row, name: member.name })),
+    statementCount: summary.n ?? statements.length,
+    returned: statements.length,
+    truncated: (summary.n ?? statements.length) > statements.length,
+    statements,
     guidance,
   };
 }

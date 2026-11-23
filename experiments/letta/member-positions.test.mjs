@@ -16,6 +16,7 @@ function history(script) {
 
 test("a name resolves to one member and returns clipped statements", async () => {
   const db = history((sql) => {
+    if (sql.includes("count(*)::int")) return [{ n: 5 }];
     if (sql.includes("lower(author_display_name)"))
       return [{ id: "123456789012345678", name: "Ada" }];
     return [
@@ -37,6 +38,8 @@ test("a name resolves to one member and returns clipped statements", async () =>
   });
   assert.equal(result.scope, "member");
   assert.equal(result.member.name, "Ada");
+  assert.equal(result.statementCount, 5);
+  assert.equal(result.truncated, true);
   assert.equal(result.statements[0].quote.length, 280);
   assert.equal(result.statements[0].messageId, "223456789012345678");
   assert.doesNotMatch(db.calls.at(-1).sql, /opted_out|v2_member_eligibility/);
