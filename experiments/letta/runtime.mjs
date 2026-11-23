@@ -270,17 +270,28 @@ export async function prepareRuntime() {
   });
 }
 
+export const runtimeTurnLimits = Object.freeze({
+  replyMs: 150_000,
+  learningMs: 300_000,
+  transportGraceMs: 30_000,
+});
+export const runtimeAppServerOptions = Object.freeze({
+  pinGlobalAgent: false,
+  // The transport must outlive the application's longest turn and its cleanup.
+  // It must not impose a second, shorter deadline while tools are still running.
+  requestTimeoutMs:
+    Math.max(runtimeTurnLimits.replyMs, runtimeTurnLimits.learningMs) +
+    runtimeTurnLimits.transportGraceMs,
+  startupTimeoutMs: 60_000,
+});
+
 export async function makeClient() {
   runtimeModel();
   await prepareRuntime();
   const { LettaAgentClient } = await import("@letta-ai/letta-agent-sdk");
   return new LettaAgentClient({
     backend: "local",
-    appServer: {
-      pinGlobalAgent: false,
-      requestTimeoutMs: 180_000,
-      startupTimeoutMs: 60_000,
-    },
+    appServer: { ...runtimeAppServerOptions },
   });
 }
 

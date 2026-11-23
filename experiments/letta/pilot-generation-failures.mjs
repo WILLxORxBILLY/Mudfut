@@ -8,9 +8,8 @@ export function requireObservationDecisions(complete) {
     );
 }
 
-export function incompleteLiveTurn(error, { batch, phase, stopping, connectionFailure }) {
+function unfinishedLiveTurn({ batch, phase, stopping, connectionFailure }) {
   return Boolean(
-    error?.code === "MODEL_OBSERVATIONS_INCOMPLETE" &&
     phase === "model" &&
     !stopping &&
     !connectionFailure &&
@@ -18,6 +17,28 @@ export function incompleteLiveTurn(error, { batch, phase, stopping, connectionFa
     !batch.historyEpisode &&
     !batch.operatorRequest,
   );
+}
+
+export function incompleteLiveTurn(error, context) {
+  return error?.code === "MODEL_OBSERVATIONS_INCOMPLETE" && unfinishedLiveTurn(context);
+}
+
+export function localModelFailure(error) {
+  return [
+    "MODEL_OBSERVATIONS_INCOMPLETE",
+    "MODEL_TURN_DEADLINE",
+    "MODEL_TRANSPORT_TIMEOUT",
+  ].includes(error?.code);
+}
+
+export function normalizeModelFailure(error) {
+  if (!error?.code && error?.message === "Timed out waiting for app-server turn")
+    error.code = "MODEL_TRANSPORT_TIMEOUT";
+  return error;
+}
+
+export function recoverableLiveTurn(error, context) {
+  return localModelFailure(error) && unfinishedLiveTurn(context);
 }
 
 export const generationFailureSchema = `CREATE TABLE IF NOT EXISTS pilot_generation_failures (
@@ -33,32 +54,41 @@ export const generationReady = `NOT EXISTS (SELECT 1 FROM pilot_generation_failu
 export const generationAttempts = `coalesce((SELECT f.failure_count FROM pilot_generation_failures f
   WHERE f.source_id=s.id AND f.source_hash=s.hash),0) AS generation_failures`;
 
-export async function deferGeneration(store, batch) {
+export function validateGenerationFailureBatch(batch) {
   if (
-    !batch?.rows?.length ||
+    !batch ||
+    typeof batch !== "object" ||
+    Array.isArray(batch) ||
+    !Array.isArray(batch.rows) ||
+    !batch.rows.length ||
+    batch.rows.length > 12 ||
     batch.historyEpisode ||
     batch.operatorRequest ||
-    batch.rows.some((row) => !/^\d{17,20}$/.test(row.id) || !/^[a-f0-9]{64}$/.test(row.hash)) ||
+    (batch.replyTo != null && (batch.rows.length !== 1 || batch.rows[0]?.id !== batch.replyTo)) ||
+    batch.rows.some(
+      (row) =>
+        !row ||
+        typeof row !== "object" ||
+        Array.isArray(row) ||
+        typeof row.id !== "string" ||
+        !/^\d{17,20}$/.test(row.id) ||
+        typeof row.hash !== "string" ||
+        !/^[a-f0-9]{64}$/.test(row.hash) ||
+        (row.source != null &&
+          (typeof row.source !== "object" ||
+            Array.isArray(row.source) ||
+            row.source.id !== row.id)),
+    ) ||
     new Set(batch.rows.map((row) => row.id)).size !== batch.rows.length
   )
     throw new Error("Invalid live generation failure targets");
-  return store.transaction(async () => {
-    const receipts = [];
-    for (const row of batch.rows) {
-      const result = await store.db.query(
-        `INSERT INTO pilot_generation_failures(source_id,source_hash,failure_count,next_attempt_at)
-         SELECT id,hash,1,now()+interval '30 seconds' FROM pilot_sources
-         WHERE id=$1 AND hash=$2 AND NOT deleted AND learnable
-         ON CONFLICT(source_id,source_hash) DO UPDATE SET
-         failure_count=pilot_generation_failures.failure_count+1,
-         next_attempt_at=now()+interval '2 minutes',last_failed_at=now()
-         RETURNING source_id,source_hash,failure_count,next_attempt_at`,
-        [row.id, row.hash],
-      );
-      receipts.push(...result.rows);
-    }
-    return receipts;
-  });
+}
+
+export async function deferGeneration(store, batch) {
+  validateGenerationFailureBatch(batch);
+  if (typeof store?.deferGeneration !== "function")
+    throw new Error("Guarded generation failure recording is unavailable");
+  return store.deferGeneration(batch);
 }
 
 export async function generationFailureStatus(db) {

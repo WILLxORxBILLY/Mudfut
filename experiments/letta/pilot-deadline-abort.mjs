@@ -1,6 +1,8 @@
 // Session close can reject a still-pending abort request; keep the deadline cause authoritative.
 export async function abortForDeadline(cancellation, active, record, otid) {
-  const deadline = new Error("Model turn deadline exceeded");
+  const deadline = Object.assign(new Error("Model turn deadline exceeded"), {
+    code: "MODEL_TURN_DEADLINE",
+  });
   cancellation.cancel(deadline);
   try {
     await active?.abort();

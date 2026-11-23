@@ -1,7 +1,11 @@
 import { REST, Routes } from "discord.js";
 import { sourceRecord, snowflake, digest, hasTextEvidence } from "./pilot-store.mjs";
 import { setTimeout as delay } from "node:timers/promises";
-import { assertStoreRecovery, recoveryEligibilitySql } from "./pilot-recovery.mjs";
+import {
+  assertStoreRecovery,
+  archiveRecallReadAllowed,
+  recoveryEligibilitySql,
+} from "./pilot-recovery.mjs";
 
 function transientDiscordRead(error) {
   if (error?.status != null)
@@ -249,9 +253,11 @@ export async function refreshSources(
   knowledge,
 ) {
   // Bounded background sweep; explicit IDs validate evidence used by a turn.
-  await assertStoreRecovery(store);
+  const policy = await assertStoreRecovery(store);
   const rows = await store.validationSources(ids);
-  const currentRows = rows.filter((row) => !row.deleted);
+  const currentRows = [];
+  for (const row of rows)
+    if (!row.deleted && !(await store.isHeld?.(row.id))) currentRows.push(row);
   for (const row of currentRows) await assertStoreRecovery(store, "live", row.source);
   // An earlier crash can persist the pilot tombstone before the knowledge-side
   // invalidation. Explicit evidence validation sees those tombstones and repairs
@@ -270,11 +276,33 @@ export async function refreshSources(
     const source = row.source;
     const current = currentById.get(source.id);
     if (!current) {
+      if (policy) {
+        await store.quarantineSource(row, "deleted");
+        await record({
+          type: "source_quarantined",
+          kind: "deleted",
+          sourceId: source.id,
+          reason: "Original unavailable; preserved source and memory, withheld from future work",
+        });
+        continue;
+      }
       await store.remove(source.id);
       await knowledge?.removeSource(source.id);
       await record({ type: "source_mutation", kind: "deleted", sourceId: source.id });
     } else {
       const updated = sourceRecord(current, source.guildId, source.channelId);
+      if (policy && row.hash !== digest(JSON.stringify(updated))) {
+        await store.quarantineSource(row, "edited");
+        await record({
+          type: "source_quarantined",
+          kind: "edited",
+          sourceId: source.id,
+          previousHash: row.hash,
+          observedHash: digest(JSON.stringify(updated)),
+          observedSource: updated,
+        });
+        continue;
+      }
       await store.ingest(updated, false, row.learnable);
       await syncKnowledgeSource(knowledge, updated);
       if (row.hash !== digest(JSON.stringify(updated)))
@@ -287,6 +315,40 @@ export async function refreshSources(
     }
     await store.checked(source.id);
   }
+}
+
+// Retained understanding may cite originals older than the work-enrollment
+// frontier. Resolve those through the existing exact, read-only archive surface,
+// never through ingest, historical work, or an unvalidated cached source copy.
+export async function recallSources(store, archiveSource, ids, checkpoint = async () => {}) {
+  const policy = await assertStoreRecovery(store);
+  const live = await store.findSources(ids);
+  if (!policy) return live;
+  const missing = [...new Set(ids)].filter((id) => !live.some((source) => source.id === id));
+  if (!missing.length) return live;
+  const rows = (
+    await store.db.query(
+      `SELECT s.source FROM pilot_sources s WHERE s.id=ANY($1::text[]) AND NOT s.deleted
+       AND NOT EXISTS(SELECT 1 FROM pilot_source_holds h WHERE h.source_id=s.id)`,
+      [missing],
+    )
+  ).rows;
+  const allowed = rows
+    .map((row) => row.source)
+    .filter((source) => archiveRecallReadAllowed(policy, source.channelId, source.id));
+  const originals = await currentSources(archiveSource, allowed, checkpoint, { exactOnly: true });
+  return [
+    ...live,
+    ...allowed.flatMap((source) => {
+      const original = originals.get(source.id);
+      // Changed originals need a new interpretation, not blind reuse of a note
+      // derived from the old text. The model may inspect them through archive
+      // tools instead; this path never rewrites the preserved source snapshot.
+      return original?.content === source.content
+        ? [sourceRecord(original, source.guildId, source.channelId)]
+        : [];
+    }),
+  ];
 }
 
 export async function currentSources(
@@ -329,15 +391,13 @@ export async function currentSources(
       if (found.has(source.id)) result.set(source.id, found.get(source.id));
       else {
         await checkpoint();
-        try {
-          result.set(
-            source.id,
-            exactDiscordOriginal(await discord.get(channelId, source.id), source.id),
-          );
-        } catch (error) {
-          if (exactOnly) continue;
-          throw error;
-        }
+        // Only an explicit "unknown message" response becomes null in the
+        // transport. Permission errors, timeouts and rate limits are NOT proof
+        // of deletion and must retain their retry/deferral classification.
+        result.set(
+          source.id,
+          exactDiscordOriginal(await discord.get(channelId, source.id), source.id),
+        );
       }
     }
   }

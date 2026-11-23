@@ -1,4 +1,4 @@
-import { incompleteLiveTurn, deferGeneration } from "./pilot-generation-failures.mjs";
+import { recoverableLiveTurn, deferGeneration } from "./pilot-generation-failures.mjs";
 import pg from "pg";
 import { readFile, lstat, rm } from "node:fs/promises";
 import { join } from "node:path";
@@ -18,6 +18,7 @@ import {
 import {
   discordTransport,
   refreshSources,
+  recallSources,
   syncKnowledgeSource,
   archiveTool,
   startTyping,
@@ -261,12 +262,31 @@ try {
     }
     await memoryDb.connect();
     let activeCheckpoint;
+    const recallCheckpoint = (assertActive) => async () => {
+      assertActive?.();
+      await activeCheckpoint?.();
+      assertActive?.();
+    };
     let readKnowledgeView = async () => {
       throw new Error("Community knowledge views are not ready");
     };
     // Archive reads of pre-frontier originals use a narrower, read-only surface:
     // exact `get`/`serverTime` on released, unprotected routes, and nothing else.
     const archiveSource = recoveryArchiveSource(db, transport);
+    const validateEvidence = async (ids, checkpoint = activeCheckpoint) => {
+      await refreshSources(store, discord, record, ids, checkpoint, knowledge);
+      if (recoveryPolicy && ids?.length) {
+        const originals = await recallSources(store, archiveSource, ids, checkpoint);
+        const missing = [...new Set(ids)].filter(
+          (id) => !originals.some((source) => source.id === id),
+        );
+        if (missing.length)
+          throw Object.assign(new Error("Reply evidence is unavailable or changed"), {
+            code: "SOURCE_QUARANTINED",
+            sourceIds: missing,
+          });
+      }
+    };
     model = await ownedExternal(db, "model", () =>
       pilotModel(archiveTool(store, archiveSource, { ...config, botId: bot.id }, history), {
         memoryOnly: mode === "recall-proof",
@@ -276,9 +296,10 @@ try {
               checkpoint: async () => activeCheckpoint?.(),
             })
           : undefined,
-        sourceLookup: store.findSources,
-        validateSources: (ids) =>
-          refreshSources(store, discord, record, ids, activeCheckpoint, knowledge),
+        sourceLookup: (ids, assertActive) =>
+          recallSources(store, archiveSource, ids, recallCheckpoint(assertActive)),
+        validateSources: (ids, assertActive) =>
+          refreshSources(store, discord, record, ids, recallCheckpoint(assertActive), knowledge),
         knowledgeViews: (query) => readKnowledgeView(query),
         memoryFactory: (legacy, { agentId }) =>
           postgresUnderstanding(memoryDb, legacy, { agentId, record, ownerDb: db }),
@@ -622,7 +643,7 @@ try {
                     ? "operator_validation"
                     : "commit";
                 await timing.measure("final_validation", () =>
-                  refreshSources(store, discord, record, result.usedSourceIds, check, knowledge),
+                  validateEvidence(result.usedSourceIds, check),
                 );
                 if (check) await check();
                 return result;
@@ -686,9 +707,31 @@ try {
           stopTyping();
         }
       } catch (error) {
-        if (incompleteLiveTurn(error, { batch, phase, stopping, connectionFailure })) {
+        if (error?.code === "SOURCE_QUARANTINED" && !stopping && !connectionFailure) {
+          // A concurrent source change invalidates this attempt, not the worker.
+          // The preserved work/holds prevent unsafe delivery; the next turn can
+          // choose freshly available evidence without lifting recovery controls.
+          const receipts =
+            batch?.rows?.length && !batch.historyEpisode && !batch.operatorRequest
+              ? await deferGeneration(store, batch)
+              : [];
+          await record({
+            type: "source_quarantine_deferred",
+            receipts,
+            phase,
+            sourceId: error.sourceId ?? null,
+            replyTo: batch?.replyTo ?? null,
+            error: safeError(error),
+          });
+          await pulse("source_quarantine_deferred");
+        } else if (recoverableLiveTurn(error, { batch, phase, stopping, connectionFailure })) {
           const failures = await deferGeneration(store, batch);
-          await record({ type: "live_generation_deferred", failures, error: safeError(error) });
+          await record({
+            type: "live_generation_deferred",
+            failures,
+            failureCode: error.code,
+            error: safeError(error),
+          });
           await pulse("live_generation_deferred");
         } else if (error.code === "HISTORY_PREEMPTED") {
           for (const message of error.messages) bufferedIncoming.set(message.id, message);

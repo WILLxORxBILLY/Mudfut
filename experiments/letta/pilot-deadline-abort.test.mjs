@@ -13,6 +13,10 @@ test("deadline abort absorbs a session-close rejection without losing the deadli
     "turn-1",
   );
   assert.throws(() => cancellation.check(), /Model turn deadline exceeded/);
+  assert.throws(
+    () => cancellation.check(),
+    (error) => error.code === "MODEL_TURN_DEADLINE",
+  );
   assert.deepEqual(records, [
     {
       type: "model_deadline_abort_error",

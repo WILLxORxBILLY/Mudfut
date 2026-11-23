@@ -1,9 +1,20 @@
-import { requireObservationDecisions } from "./pilot-generation-failures.mjs";
+import {
+  requireObservationDecisions,
+  normalizeModelFailure,
+  localModelFailure,
+} from "./pilot-generation-failures.mjs";
 import { readFile, appendFile, mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { memoryStore } from "./memory.mjs";
-import { makeClient, state, runtimeModel, saveJson, assertPrivateState } from "./runtime.mjs";
+import {
+  makeClient,
+  state,
+  runtimeModel,
+  saveJson,
+  assertPrivateState,
+  runtimeTurnLimits,
+} from "./runtime.mjs";
 import {
   understandingStore,
   decodeUnderstanding,
@@ -184,7 +195,8 @@ export async function pilotModel(
       const used = new Set(supplied.keys());
       const audits = [];
       const toolBoundary = toolLifecycle();
-      const deadline = Date.now() + (expectsReply ? 150000 : 300000);
+      const deadline =
+        Date.now() + (expectsReply ? runtimeTurnLimits.replyMs : runtimeTurnLimits.learningMs);
       const registerSources = (sources) => {
         for (const source of sources) {
           supplied.set(source.id, source);
@@ -227,19 +239,23 @@ export async function pilotModel(
               },
             })
           : null;
-      const lookup = async (ids) => {
-        await validateSources(ids);
+      const lookup = async (ids, { recordUse = true } = {}) => {
+        const assertActive = () => cancellation.check();
+        assertActive();
+        await validateSources(ids, assertActive);
+        assertActive();
         // A refreshed deletion must not leave an older supplied copy readable.
         for (const id of ids) supplied.delete(id);
-        for (const s of await sourceLookup(ids)) {
+        for (const s of await sourceLookup(ids, assertActive)) {
           supplied.set(s.id, s);
           // Only a source that actually resolved is evidence this turn used. A
           // policy-refused source is stripped by validationSources and never comes
           // back from sourceLookup; recording the requested ids wholesale put a
           // withheld id into usedSourceIds, so the work row claimed the reply had
           // relied on evidence the policy deliberately kept from the model.
-          used.add(s.id);
+          if (recordUse) used.add(s.id);
         }
+        assertActive();
       };
       const tool = (name, description, parameters, execute) => ({
         name,
@@ -348,7 +364,18 @@ export async function pilotModel(
                   input.keys.some((key) => typeof key !== "string" || key.length > 100)))
             )
               throw new Error("Invalid memory query");
-            return readUnderstanding(repair.draft, recallOptions(input, batch), supplied, lookup);
+            const result = await readUnderstanding(
+              repair.draft,
+              recallOptions(input, batch),
+              supplied,
+              (ids) => lookup(ids, { recordUse: false }),
+              { allowPartial: true },
+            );
+            // Only interpretations actually returned to the model count as
+            // evidence use. A withheld entry must not leak its text or add its
+            // inadmissible originals to this turn's validation receipts.
+            for (const id of evidenceIds(result.entries)) used.add(id);
+            return result;
           },
         ),
         ...(knowledgeViews
@@ -802,8 +829,8 @@ export async function pilotModel(
           replyEvidence: provenance.snapshot(),
         };
       } catch (error) {
-        turnError = error;
-        throw error;
+        turnError = normalizeModelFailure(error);
+        throw turnError;
       } finally {
         clearTimeout(timer);
         toolBoundary.seal();
@@ -828,8 +855,7 @@ export async function pilotModel(
         } catch (error) {
           cleanupError ??= error;
         }
-        if (cleanupError && (!turnError || turnError.code === "MODEL_OBSERVATIONS_INCOMPLETE"))
-          throw cleanupError;
+        if (cleanupError && (!turnError || localModelFailure(turnError))) throw cleanupError;
       }
     },
     abort: async (reason) => {

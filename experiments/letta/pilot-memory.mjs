@@ -234,7 +234,13 @@ export function selectUnderstanding(entries, options = {}) {
 }
 
 // Capture one view before source validation yields to concurrent tool work.
-export async function readUnderstanding(snapshot, options, sources, lookup) {
+export async function readUnderstanding(
+  snapshot,
+  options,
+  sources,
+  lookup,
+  { allowPartial = false } = {},
+) {
   const { content, revision } = snapshot;
   const entries = decodeUnderstanding(content);
   if (!entries) throw new Error("Memory migration required");
@@ -248,28 +254,57 @@ export async function readUnderstanding(snapshot, options, sources, lookup) {
   // Revision lineage can depend on older sources beyond the current quote.
   const requiredSources = evidenceIds(selected);
   await lookup(requiredSources);
-  for (const id of requiredSources)
-    if (sources.get(id)?.id !== id)
-      throw new Error(`Memory evidence changed or disappeared: ${id}`);
+  const unavailable = [];
+  const available = allowPartial
+    ? selected.filter((entry) => {
+        let reason;
+        if (evidenceIds([entry]).some((id) => sources.get(id)?.id !== id))
+          reason = "supporting-original-unavailable";
+        else if (
+          entry.evidence.some((evidence) => isCorrectionRequest(sources.get(evidence.messageId)))
+        )
+          reason = "correction-request-is-review-context";
+        else if (
+          entry.evidence.some(
+            (evidence) => !sources.get(evidence.messageId).content.includes(evidence.quote),
+          )
+        )
+          reason = "supporting-quote-changed";
+        if (reason) unavailable.push({ key: entry.key, reason });
+        return !reason;
+      })
+    : selected;
+  if (!allowPartial)
+    for (const id of requiredSources)
+      if (sources.get(id)?.id !== id)
+        throw new Error(`Memory evidence changed or disappeared: ${id}`);
   const matched = options.keys
     ? selected
     : rankUnderstanding(entries, options).map((row) => row.entry);
   const omitted = matched.filter((entry) => !selected.some((e) => e.key === entry.key));
   return {
     revision,
-    entries: selected,
-    sources: memoryEvidence(selected, sources),
+    entries: available,
+    sources: memoryEvidence(available, sources),
     totalEntries: entries.length,
     coverage: {
       matchingEntries: matched.length,
-      returnedEntries: selected.length,
+      returnedEntries: available.length,
       omittedMatchingEntries: omitted.length,
       nextKeys: omitted.slice(0, 8).map((entry) => entry.key),
-      relatedContextKeys: selected
+      ...(allowPartial
+        ? {
+            unavailableEntries: unavailable,
+            unavailableMatchingEntries: unavailable.filter((row) =>
+              matched.some((entry) => entry.key === row.key),
+            ).length,
+          }
+        : {}),
+      relatedContextKeys: available
         .filter((entry) => !matched.some((e) => e.key === entry.key))
         .map((entry) => entry.key),
       caveat:
-        "Lexical/person selection and linked or shared-source context, not complete topic or person history. Shared sources do not establish agreement or a changed view. Query by person and inspect intervening archive messages without topic keywords for qualifications that use different wording.",
+        "Lexical/person selection and linked or shared-source context, not complete topic or person history. Shared sources do not establish agreement or a changed view. Entries listed as unavailable are withheld interpretations, not proof the topic or history is absent. Query by person and inspect intervening archive messages without topic keywords for qualifications that use different wording.",
     },
     limits: memoryLimits,
   };
