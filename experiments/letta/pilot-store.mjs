@@ -880,11 +880,19 @@ export async function pilotStore(db, config, { discoverySince } = {}) {
           }
           if (["ingest", "isAddressed"].includes(key)) await assertRecovery(db, "live", args[0]);
           if (key === "isAddressed" && args[2]) {
+            // A reply parent is optional context, not a work item. The gate above
+            // already decided the live message itself is inside the frontier, so a
+            // parent that is protected, pre-frontier, or on a route whose frontier
+            // cannot be resolved must not abort the cycle that is serving every
+            // other message. Decide from the policy *before* any transport call, so
+            // a refused parent is never read, ingested or persisted: it simply
+            // yields no parent context, exactly like a deleted message. Anything
+            // the policy cannot place inside the frontier stays fail-closed (skip).
             const read = args[2];
-            args[2] = async (channelId, id) => {
-              await assertRecovery(db, "live", { id, channelId });
-              return read(channelId, id);
-            };
+            args[2] = async (channelId, id) =>
+              recoverySourceAllowed(policy, { id, channelId })
+                ? read(channelId, id)
+                : null;
           }
           if (key === "ingest") {
             const previous = (

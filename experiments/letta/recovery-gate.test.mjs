@@ -584,14 +584,83 @@ test(
       ])
         await assert.rejects(fn, /recovery/i);
       const current = { ...value("555555555555555551"), replyTo: a };
-      await assert.rejects(
-        store.isAddressed(current, "444444444444444444", async () => {
+      // The live message itself is post-frontier and legitimate. Its parent is a
+      // protected, pre-frontier original, so the lookup yields no parent context
+      // instead of aborting: nothing is read and the transport callback never runs.
+      assert.equal(
+        await store.isAddressed(current, "444444444444444444", async () => {
           callbacks++;
           return null;
         }),
-        /recovery/i,
+        false,
       );
       assert.equal(callbacks, 0);
+    }),
+);
+
+test(
+  "live-only ingests a post-frontier reply to a pre-frontier parent without reading or keeping that parent",
+  database,
+  () =>
+    fixture("prefrontier_parent", async ({ db, store, hold, snapshot }) => {
+      await hold();
+      await recovery.releaseRecovery(db, {
+        expectedRevision: 1,
+        reason: "Fictional pre-frontier parent review",
+        frontiers: { [config.channelId]: frontier },
+        confirmLiveOnly: true,
+      });
+      // An unseeded id strictly below the released frontier: the shape of the
+      // reply parent in the #economics-markets exchange that aborted the poll.
+      const parent = "555555555555555400";
+      const reply = { ...value("555555555555555551", "Fictional live reply"), replyTo: parent };
+      const before = await snapshot();
+      assert.equal(
+        (await db.query("SELECT count(*)::int n FROM pilot_sources WHERE id=$1", [parent])).rows[0]
+          .n,
+        0,
+      );
+      // The transport would refuse this exact read. Record whether it is even asked:
+      // the policy decides first, so a pre-frontier parent is never fetched.
+      const reads = [];
+      const readParent = async (channelId, id) => {
+        reads.push([channelId, id]);
+        return { id, channel_id: channelId, author: { id: "444444444444444444" } };
+      };
+      assert.equal(await store.isAddressed(reply, "444444444444444444", readParent), false);
+      assert.deepEqual(reads, []);
+      // The live message itself is still ingested as ordinary pending work.
+      await store.ingest(reply, false);
+      assert.equal(
+        (await db.query("SELECT source->>'replyTo' p FROM pilot_sources WHERE id=$1", [reply.id]))
+          .rows[0].p,
+        parent,
+      );
+      // The pre-frontier parent was never read, so it never entered pilot state and
+      // derived no work. Only the live reply row was added.
+      assert.equal(
+        (await db.query("SELECT count(*)::int n FROM pilot_sources WHERE id=$1", [parent])).rows[0]
+          .n,
+        0,
+      );
+      assert.equal(
+        (await db.query("SELECT count(*)::int n FROM pilot_work WHERE source_ids && $1::text[]", [
+          [parent],
+        ])).rows[0].n,
+        0,
+      );
+      const after = await snapshot();
+      assert.equal(after.pilot_sources.length, before.pilot_sources.length + 1);
+      // The gate on the message itself, and the policy revision, are unchanged.
+      assert.equal(
+        (await db.query("SELECT policy FROM pilot_recovery_policy")).rows[0].policy.phase,
+        "live-only",
+      );
+      assert.equal(
+        (await db.query("SELECT policy FROM pilot_recovery_policy")).rows[0].policy.revision,
+        2,
+      );
+      await assert.rejects(store.ingest(value(parent, "Fictional parent intake")), /recovery/i);
     }),
 );
 
