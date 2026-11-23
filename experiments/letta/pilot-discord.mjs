@@ -116,7 +116,11 @@ export function discordTransport(token, record) {
   }
   return {
     me: () => read(Routes.user()),
+    guild: (guildId) => read(Routes.guild(guildId)),
     guildChannels: (guildId) => read(Routes.guildChannels(guildId)),
+    guildMember: (guildId, userId) => read(Routes.guildMember(guildId, userId)),
+    guildRoles: (guildId) => read(Routes.guildRoles(guildId)),
+    threadMember: (threadId, userId) => read(Routes.threadMember(threadId, userId)),
     serverTime: () => {
       if (!Number.isFinite(serverTime)) throw new Error("Discord server time unavailable");
       return serverTime;

@@ -155,7 +155,9 @@ export function replyEvidence(initial, batch) {
           sources: result.sources,
           coverage: result.coverage,
         });
-      if (["search_archive", "browse_archive", "read_discussion"].includes(name))
+      if (
+        ["search_archive", "browse_archive", "read_discussion", "member_positions"].includes(name)
+      )
         trace.archiveReads.push({
           tool: name,
           initiatedBy,

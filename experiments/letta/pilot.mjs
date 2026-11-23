@@ -22,6 +22,17 @@ import {
   archiveTool,
   startTyping,
 } from "./pilot-discord.mjs";
+import {
+  callerIdFromBatch,
+  memberPositions,
+  profileArchiveReady,
+  profileCandidateChannels,
+  profileExcludedMembers,
+  validateProfileArtifacts,
+  validateProfileOriginals,
+} from "./pilot-profile.mjs";
+import { resolveProfileChannels } from "./member-visibility.mjs";
+import { ensureMemberProfileSchema } from "./member-profile-store.mjs";
 import { decodeUnderstanding } from "./pilot-memory.mjs";
 import { postgresUnderstanding } from "./pilot-memory-postgres.mjs";
 import { withLivePriority, livePriorityCheckpoint, progressPulse } from "./pilot-priority.mjs";
@@ -103,6 +114,7 @@ const memoryDb = new pg.Client({
   connectionTimeoutMillis: 10000,
 });
 let history,
+  profileWriter,
   model,
   knowledge,
   knowledgeManifest,
@@ -267,6 +279,45 @@ try {
     // Archive reads of pre-frontier originals use a narrower, read-only surface:
     // exact `get`/`serverTime` on released, unprotected routes, and nothing else.
     const archiveSource = recoveryArchiveSource(db, transport);
+    const profilesReady = history
+      ? (await optionalArchive(() => profileArchiveReady(history))) === true
+      : false;
+    if (profilesReady) {
+      // Derived annotations live with this installation, not in the read-only
+      // archive. No historical messages or reply queues are enrolled here.
+      profileWriter = new pg.Client({
+        ...connection,
+        statement_timeout: 10000,
+        connectionTimeoutMillis: 10000,
+      });
+      profileWriter.on("error", lostConnection);
+      try {
+        await profileWriter.connect();
+        await ensureMemberProfileSchema(profileWriter);
+      } catch (error) {
+        await profileWriter.end().catch(() => {});
+        profileWriter = undefined;
+        await record({ type: "member_profile_storage_unavailable", error: safeError(error) });
+      }
+    }
+    let profileChannels = { at: 0, ids: [] };
+    const profileVisibility = async (batch, candidateChannelIds = null) => {
+      const callerId = callerIdFromBatch(batch);
+      const destination = batch?.rows?.find((row) => row.id === batch.replyTo)?.source?.channelId;
+      if (!callerId || !destination) return null;
+      if (!candidateChannelIds) {
+        if (Date.now() - profileChannels.at > 300000) {
+          profileChannels = {
+            at: Date.now(),
+            ids: await profileCandidateChannels(history, config.guildId),
+          };
+        }
+        candidateChannelIds = profileChannels.ids;
+      }
+      return resolveProfileChannels(discord, config.guildId, callerId, destination, {
+        candidateChannelIds,
+      });
+    };
     model = await ownedExternal(db, "model", () =>
       pilotModel(archiveTool(store, archiveSource, { ...config, botId: bot.id }, history), {
         memoryOnly: mode === "recall-proof",
@@ -280,6 +331,23 @@ try {
         validateSources: (ids) =>
           refreshSources(store, discord, record, ids, activeCheckpoint, knowledge),
         knowledgeViews: (query) => readKnowledgeView(query),
+        memberProfiles: profilesReady
+          ? async (request, turn) => {
+              const result = await memberPositions(history, {
+                ...request,
+                guildId: config.guildId,
+                botId: bot.id,
+                callerId: turn?.callerId ?? null,
+                visibleChannelIds: turn?.visibleChannelIds ?? null,
+                profileWriter,
+                excludedMembers: [...(await profileExcludedMembers(profileWriter ?? db, bot.id))],
+                validateOriginals: (sources) => validateProfileOriginals(archiveSource, sources),
+              });
+              await validateProfileOriginals(archiveSource, result.sources ?? []);
+              return result;
+            }
+          : undefined,
+        callerVisibility: profilesReady ? profileVisibility : undefined,
         memoryFactory: (legacy, { agentId }) =>
           postgresUnderstanding(memoryDb, legacy, { agentId, record, ownerDb: db }),
       }),
@@ -621,9 +689,34 @@ try {
                   : batch.operatorRequest
                     ? "operator_validation"
                     : "commit";
-                await timing.measure("final_validation", () =>
-                  refreshSources(store, discord, record, result.usedSourceIds, check, knowledge),
-                );
+                await timing.measure("final_validation", async () => {
+                  await refreshSources(
+                    store,
+                    discord,
+                    record,
+                    result.usedSourceIds,
+                    check,
+                    knowledge,
+                  );
+                  if (result.profileSources?.length) {
+                    const excluded = await profileExcludedMembers(profileWriter ?? db, bot.id);
+                    if (result.profileSources.some((source) => excluded.has(source.authorId)))
+                      throw new Error("Profile member opted out during generation");
+                    const visible = await profileVisibility(batch, [
+                      ...new Set(result.profileSources.map((source) => source.channelId)),
+                    ]);
+                    if (
+                      !visible ||
+                      result.profileSources.some((source) => !visible.includes(source.channelId))
+                    )
+                      throw new Error("Profile source visibility changed during generation");
+                    await validateProfileOriginals(archiveSource, result.profileSources);
+                    await validateProfileArtifacts(history, result.profileReferences ?? [], {
+                      visibleChannelIds: visible,
+                      excluded,
+                    });
+                  }
+                });
                 if (check) await check();
                 return result;
               } finally {
@@ -779,6 +872,7 @@ try {
   ack?.stop();
   const cleanup = await boundedCleanup([
     model?.close(),
+    profileWriter?.end(),
     history?.end(),
     memoryDb.end(),
     db.end(),

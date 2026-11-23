@@ -10,6 +10,7 @@ import { root, saveJson, safeError, assertPrivateState } from "./runtime.mjs";
 
 const exec = promisify(execFile);
 const mode = process.argv[2];
+const keepFixtures = process.env.MUDFUT_KEEP_FIXTURES === "1";
 if (!["fixtures", "live", "knowledge-review", "semantic-review"].includes(mode))
   throw new Error("Use fixtures, live, knowledge-review or semantic-review");
 const bin = (name) =>
@@ -151,6 +152,14 @@ try {
       "pilot-baseline-history.test.mjs",
       "pilot-baseline-snapshot.test.mjs",
       "history-annotation-recovery.matrix.test.mjs",
+      "member-profile.test.mjs",
+      "member-profile-review.test.mjs",
+      "member-profile-store.test.mjs",
+      "member-profile-boundary.test.mjs",
+      "member-profile-cli.test.mjs",
+      "member-profile-worker.test.mjs",
+      "member-positions.test.mjs",
+      "member-visibility.test.mjs",
     ]);
   else if (mode === "knowledge-review")
     await run([
@@ -185,7 +194,7 @@ try {
     console.error("Cluster cleanup failed: " + safeError(error));
     process.exitCode = 1;
   }
-  if (stopped) {
+  if (stopped && !keepFixtures) {
     if (mode !== "live") await rm(directory, { recursive: true, force: true });
     else {
       await rm(data, { recursive: true, force: true });
@@ -194,9 +203,11 @@ try {
     }
   }
   console.log(
-    stopped
-      ? "Disposable PostgreSQL stopped and removed."
-      : `Cluster retained for recovery: ${data}`,
+    stopped && keepFixtures
+      ? `Disposable PostgreSQL stopped; qualification evidence retained: ${directory}`
+      : stopped
+        ? "Disposable PostgreSQL stopped and removed."
+        : `Cluster retained for recovery: ${data}`,
   );
   if (mode === "live")
     console.log(`Private model evidence retained: ${join(directory, "transcripts")}`);

@@ -32,6 +32,9 @@ Start with the [architecture](docs/ARCHITECTURE.md) and its links to executable
 fictional checks. The model-free tests exercise integrity and recovery, not model
 reasoning quality. No general accuracy benchmark or human evaluation is claimed.
 
+See [member profiles](docs/MEMBER-PROFILES.md) for the evidence index, semantic
+review, audience permissions and bounded maintenance commands.
+
 ## Install
 
 Use Node 22, pnpm 11.28.7 and PostgreSQL 16. Clone the repository and install the
