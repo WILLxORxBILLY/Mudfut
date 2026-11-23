@@ -128,6 +128,14 @@ test("retry classification terminates on cyclic and deeply nested error causes",
   assert.equal(retryableFailure(wrapped), false);
   wrapped.cause.code = "ECONNRESET";
   assert.equal(retryableFailure(wrapped), true);
+  assert.equal(
+    retryableFailure({
+      code: "LIVE_PRIORITY_POLL_FAILED",
+      message: "Live-priority polling failed; historical work was stopped",
+      cause: { code: "ENOTFOUND", message: "getaddrinfo ENOTFOUND discord.com" },
+    }),
+    true,
+  );
   wrapped.status = 401;
   assert.equal(retryableFailure(wrapped), false);
   wrapped.status = 503;

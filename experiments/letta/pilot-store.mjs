@@ -2,10 +2,12 @@ import {
   generationFailureSchema,
   generationReady,
   generationAttempts,
+  validateGenerationFailureBatch,
 } from "./pilot-generation-failures.mjs";
 import { createHash, randomUUID } from "node:crypto";
 import {
   claimPilotOwnership,
+  ownsPilot,
   assertRecovery,
   readRecoveryPolicy,
   recoverySourceAllowed,
@@ -235,7 +237,14 @@ export async function pilotStore(db, config, { discoverySince } = {}) {
   const meta = async () => (await db.query("SELECT * FROM pilot_meta")).rows[0];
   const sources = async () =>
     (await db.query("SELECT * FROM pilot_sources ORDER BY id::numeric")).rows;
-  const eligible = async () => (await sources()).filter((s) => !s.deleted);
+  const eligible = async () =>
+    (
+      await db.query(
+        `SELECT s.* FROM pilot_sources s WHERE NOT s.deleted
+     AND NOT EXISTS(SELECT 1 FROM pilot_source_holds h WHERE h.source_id=s.id)
+     ORDER BY s.id::numeric`,
+      )
+    ).rows;
   // Retired preference rows remain audit history; they no longer filter or delete sources.
   const optedOut = async () => false;
   let transactionTail = Promise.resolve();
@@ -321,6 +330,92 @@ export async function pilotStore(db, config, { discoverySince } = {}) {
       if (changed.rowCount) await invalidate([id]);
     });
   }
+  async function heldEvidence(ids) {
+    if (!ids.length) return [];
+    return (
+      await db.query(
+        "SELECT source_id FROM pilot_source_holds WHERE source_id=ANY($1::text[]) ORDER BY source_id",
+        [[...new Set(ids)]],
+      )
+    ).rows.map((row) => row.source_id);
+  }
+  async function assertUnheldEvidence(ids) {
+    const held = await heldEvidence(ids);
+    if (held.length)
+      throw Object.assign(new Error("Source evidence is quarantined"), {
+        code: "SOURCE_QUARANTINED",
+        sourceIds: held,
+      });
+  }
+  async function quarantineSource(snapshot, reason) {
+    const source = snapshot?.source ?? snapshot;
+    const expectedHash = snapshot?.source ? snapshot.hash : null;
+    if (!source || !snowflake(source.id) || !["deleted", "edited"].includes(reason))
+      throw new Error("Invalid source quarantine request");
+    return transaction(async () => {
+      if (!(await ownsPilot(db)))
+        throw Object.assign(new Error("Source quarantine requires pilot ownership"), {
+          code: "PILOT_OWNERSHIP_REQUIRED",
+        });
+      const row = (
+        await db.query("SELECT * FROM pilot_sources WHERE id=$1 FOR UPDATE", [source.id])
+      ).rows[0];
+      if (
+        !row ||
+        canonicalDigest(row.source) !== canonicalDigest(source) ||
+        (expectedHash != null && row.hash !== expectedHash)
+      )
+        throw Object.assign(new Error("Source changed before quarantine"), {
+          code: "SOURCE_SNAPSHOT_CHANGED",
+        });
+      // Re-read the real stored route; an input object cannot launder protected
+      // or pre-frontier evidence into a live source-specific safety hold.
+      const policy = await assertRecovery(db, "live", row.source);
+      const holdReason = `source-unavailable:${reason}`;
+      const inserted = await db.query(
+        "INSERT INTO pilot_source_holds(source_id,reason) VALUES($1,$2) ON CONFLICT DO NOTHING RETURNING source_id",
+        [source.id, holdReason],
+      );
+      const dependents = (
+        await db.query(
+          `SELECT DISTINCT w.reply_to AS id,s.source FROM pilot_work w
+         LEFT JOIN pilot_outbox o ON o.source_id=w.reply_to
+         JOIN pilot_sources s ON s.id=w.reply_to
+         WHERE (w.status='prepared' OR o.status IN ('ready','sending')) AND
+           ($1=ANY(w.source_ids) OR $1=ANY(w.validation_ids) OR w.reply_to=$1)`,
+          [source.id],
+        )
+      ).rows;
+      const dependentReplyIds = [];
+      for (const dependent of dependents) {
+        if (policy && !recoverySourceAllowed(policy, dependent.source)) continue;
+        await db.query(
+          "INSERT INTO pilot_source_holds(source_id,reason) VALUES($1,$2) ON CONFLICT DO NOTHING",
+          [dependent.id, holdReason],
+        );
+        await db.query(
+          "UPDATE pilot_outbox SET status='held',error=coalesce(error,$2) WHERE source_id=$1 AND status IN ('ready','sending')",
+          [dependent.id, "Reply evidence is quarantined; preserve for review"],
+        );
+        dependentReplyIds.push(dependent.id);
+      }
+      // A deterministic reply has no pilot_work row, but its own unavailable
+      // target must still be held. Never touch terminal delivery receipts.
+      await db.query(
+        "UPDATE pilot_outbox SET status='held',error=coalesce(error,$2) WHERE source_id=$1 AND status IN ('ready','sending')",
+        [source.id, "Reply source is quarantined; preserve for review"],
+      );
+      return {
+        held: true,
+        inserted: inserted.rowCount === 1,
+        sourceId: source.id,
+        reason: (
+          await db.query("SELECT reason FROM pilot_source_holds WHERE source_id=$1", [source.id])
+        ).rows[0].reason,
+        dependentReplyIds,
+      };
+    });
+  }
   async function holdSource(id) {
     if (!snowflake(id)) throw new Error("Invalid correction source ID");
     return transaction(async () => {
@@ -334,6 +429,72 @@ export async function pilotStore(db, config, { discoverySince } = {}) {
       );
       if (held.rowCount) await invalidate([id], { requeueHistory: false });
       return Boolean(held.rowCount);
+    });
+  }
+  async function deferGeneration(batch) {
+    validateGenerationFailureBatch(batch);
+    return transaction(async () => {
+      if (!(await ownsPilot(db)))
+        throw Object.assign(new Error("Generation failure recording requires pilot ownership"), {
+          code: "PILOT_OWNERSHIP_REQUIRED",
+        });
+      const current = new Map(
+        (
+          await db.query(
+            "SELECT * FROM pilot_sources WHERE id=ANY($1::text[]) ORDER BY id FOR UPDATE",
+            [batch.rows.map((row) => row.id)],
+          )
+        ).rows.map((row) => [row.id, row]),
+      );
+      const receipts = [];
+      for (const target of batch.rows) {
+        const stored = current.get(target.id);
+        if (!stored) continue;
+        // Retry receipts are not a generic edit escape hatch. Decide eligibility
+        // from the actual stored identity and route, never a supplied source body.
+        if (
+          stored.source?.id !== stored.id ||
+          stored.source?.guildId !== config.guildId ||
+          !(await api.replyChannelAllowed(stored.source?.channelId))
+        )
+          throw Object.assign(new Error("Generation failure target is outside live scope"), {
+            code: "GENERATION_FAILURE_TARGET_INVALID",
+          });
+        await assertRecovery(db, "live", stored.source);
+        if (stored.hash !== target.hash) continue;
+        if (target.source && canonicalDigest(target.source) !== canonicalDigest(stored.source))
+          throw Object.assign(new Error("Generation failure source snapshot does not match"), {
+            code: "GENERATION_FAILURE_TARGET_INVALID",
+          });
+        if (batch.replyTo === stored.id && !stored.addressed)
+          throw Object.assign(new Error("Generation failure reply target was not addressed"), {
+            code: "GENERATION_FAILURE_TARGET_INVALID",
+          });
+        if (
+          stored.deleted ||
+          !stored.learnable ||
+          stored.evidence_excluded ||
+          (await heldEvidence([stored.id])).length ||
+          (stored.learned &&
+            (!stored.addressed ||
+              (await db.query("SELECT 1 FROM pilot_outbox WHERE source_id=$1", [stored.id]))
+                .rowCount))
+        )
+          continue;
+        const result = await db.query(
+          `INSERT INTO pilot_generation_failures(source_id,source_hash,failure_count,next_attempt_at)
+           SELECT id,hash,1,now()+interval '30 seconds' FROM pilot_sources
+           WHERE id=$1 AND hash=$2 AND NOT deleted AND learnable AND NOT evidence_excluded
+             AND NOT EXISTS(SELECT 1 FROM pilot_source_holds h WHERE h.source_id=$1)
+           ON CONFLICT(source_id,source_hash) DO UPDATE SET
+           failure_count=pilot_generation_failures.failure_count+1,
+           next_attempt_at=now()+interval '2 minutes',last_failed_at=now()
+           RETURNING source_id,source_hash,failure_count,next_attempt_at`,
+          [stored.id, stored.hash],
+        );
+        receipts.push(...result.rows);
+      }
+      return receipts;
     });
   }
   async function excludeCorrectionRequestEvidence(ids) {
@@ -401,6 +562,14 @@ export async function pilotStore(db, config, { discoverySince } = {}) {
     await transaction(async () => {
       if ((await meta()).epoch !== epoch)
         throw new Error("Source revision changed during generation");
+      await assertUnheldEvidence([
+        ...batch.rows.map((row) => row.id),
+        ...validationIds,
+        ...(batch.context?.priorMessages ?? []).map((source) => source.id),
+        ...(batch.context?.surroundingMessages ?? []).map((source) => source.id),
+        ...(historyProjection?.contextIds ?? []),
+        ...(historyProjection?.sourceIds ?? []),
+      ]);
       let savedProjection = null;
       if (historyProjection) {
         if (
@@ -531,6 +700,10 @@ export async function pilotStore(db, config, { discoverySince } = {}) {
           continue;
       }
       try {
+        if ((await heldEvidence([...work.source_ids, ...(work.validation_ids ?? [])])).length) {
+          result.deferred.push(work.id);
+          continue;
+        }
         if (work.epoch !== (await meta()).epoch) throw new Error("Prepared memory epoch mismatch");
         if (typeof work.candidate.content !== "string")
           throw Object.assign(new Error("Invalid prepared memory candidate content"), {
@@ -542,6 +715,10 @@ export async function pilotStore(db, config, { discoverySince } = {}) {
           current.revision !== work.candidate.expectedRevision
         )
           throw new Error("Prepared memory conflicts with current note; operator review required");
+        if ((await heldEvidence([...work.source_ids, ...(work.validation_ids ?? [])])).length) {
+          result.deferred.push(work.id);
+          continue;
+        }
         await memory.write(
           { content: work.candidate.content, expectedRevision: current.revision },
           {
@@ -578,6 +755,7 @@ export async function pilotStore(db, config, { discoverySince } = {}) {
       // The durable candidate precedes MemFS. A crash after the file commit is
       // recovered by its content hash, without applying a second memory update.
       await transaction(async () => {
+        await assertUnheldEvidence([...work.source_ids, ...(work.validation_ids ?? [])]);
         await db.query("UPDATE pilot_sources SET learned=true WHERE id=ANY($1::text[])", [
           work.source_ids,
         ]);
@@ -629,6 +807,8 @@ export async function pilotStore(db, config, { discoverySince } = {}) {
     optedOut,
     ingest,
     remove,
+    quarantineSource,
+    deferGeneration,
     holdSource,
     excludeCorrectionRequestEvidence,
     optOut,
@@ -654,8 +834,12 @@ export async function pilotStore(db, config, { discoverySince } = {}) {
       // fetched explicitly before memory is read and again before delivery.
       return (
         await db.query(`SELECT * FROM pilot_sources WHERE id IN (
-        (SELECT id FROM pilot_sources WHERE NOT deleted AND learnable ORDER BY id::numeric DESC LIMIT 20)
-        UNION (SELECT id FROM pilot_sources WHERE NOT deleted ORDER BY checked_at NULLS FIRST,id::numeric LIMIT 20))`)
+        (SELECT s.id FROM pilot_sources s WHERE NOT s.deleted AND s.learnable
+         AND NOT EXISTS(SELECT 1 FROM pilot_source_holds h WHERE h.source_id=s.id)
+         ORDER BY s.id::numeric DESC LIMIT 20)
+        UNION (SELECT s.id FROM pilot_sources s WHERE NOT s.deleted
+         AND NOT EXISTS(SELECT 1 FROM pilot_source_holds h WHERE h.source_id=s.id)
+         ORDER BY s.checked_at NULLS FIRST,s.id::numeric LIMIT 20))`)
       ).rows;
     },
     async checked(id) {
@@ -705,8 +889,9 @@ export async function pilotStore(db, config, { discoverySince } = {}) {
       const recent = (
         await db.query(
           `SELECT source FROM (
-        SELECT id,source FROM pilot_sources WHERE NOT deleted
+        SELECT id,source FROM pilot_sources s WHERE NOT deleted
         AND source->>'channelId'=$1 AND id::numeric < $2::numeric
+        AND NOT EXISTS(SELECT 1 FROM pilot_source_holds h WHERE h.source_id=s.id)
         ORDER BY CASE WHEN id=$3 THEN 0 ELSE 1 END,id::numeric DESC LIMIT 8
         ) selected ORDER BY id::numeric`,
           [channelId, beforeId, replyParent],
@@ -717,6 +902,7 @@ export async function pilotStore(db, config, { discoverySince } = {}) {
           `SELECT source_id,discord_id,content FROM (
         SELECT source_id,discord_id,content FROM pilot_outbox WHERE status='sent'
         AND epoch=(SELECT epoch FROM pilot_meta) AND source_id::numeric < $1::numeric
+        AND NOT EXISTS(SELECT 1 FROM pilot_source_holds h WHERE h.source_id=pilot_outbox.source_id)
         AND EXISTS(SELECT 1 FROM pilot_sources s WHERE s.id=source_id AND s.source->>'channelId'=$2)
         ORDER BY CASE WHEN discord_id=$3 THEN 0 ELSE 1 END,source_id::numeric DESC LIMIT 4
         ) selected ORDER BY source_id::numeric`,
@@ -959,6 +1145,11 @@ async function holdPendingReply(db, sourceId) {
   const held = await db.query(
     `WITH held_source AS (
        SELECT source_id FROM pilot_source_holds WHERE source_id=$1
+       UNION SELECT $1::text WHERE EXISTS (
+         SELECT 1 FROM pilot_work w JOIN pilot_source_holds h
+           ON h.source_id=ANY(w.source_ids || w.validation_ids)
+         WHERE w.reply_to=$1
+       )
      ), held_reply AS (
        UPDATE pilot_outbox o
        SET status='held',error=coalesce(o.error,'Source is held; do not send automatically')
@@ -1051,6 +1242,8 @@ export async function deliver(store, discord, botId, channelId, record) {
       `UPDATE pilot_outbox o SET status='sending',attempted_at=now()
        WHERE o.source_id=$1 AND o.status='ready'
          AND NOT EXISTS(SELECT 1 FROM pilot_source_holds h WHERE h.source_id=o.source_id)
+         AND NOT EXISTS(SELECT 1 FROM pilot_work w JOIN pilot_source_holds h
+           ON h.source_id=ANY(w.source_ids || w.validation_ids) WHERE w.reply_to=o.source_id)
        RETURNING o.source_id`,
       [row.source_id],
     );
